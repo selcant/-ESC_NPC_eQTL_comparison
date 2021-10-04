@@ -1,0 +1,324 @@
+---
+title: "NPC sex differences"
+author: "Selcan Aydin"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    df_print: paged
+    code_folding: hide
+---
+
+# To do:
+
+- Add batch corrected data analysis.
+- Add protein data analysis --> can't do DESEq but can look at the overlap between PC driver genes. 
+
+```{r, warning=FALSE, message=FALSE}
+library(eulerr)
+library(DESeq2)
+library(cowplot)
+library(ggrepel)
+library(ggplotify)
+library(tidyverse)
+rename <- dplyr::rename
+select <- dplyr::select
+```
+
+```{r, setup, warning=FALSE, message=FALSE}
+options(stringsAsFactors = F)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_knit$set(progress=FALSE)
+```
+
+In DO ESCs, we observe a significant sex effect in gene expression and third principal component identifies many X chromosome genes as the primary drivers of this effect. However, this grouping by sex obserd in the ESCs is lost in the NPCs. I want to investigate the lack of prominent sex effects in NPC further. Here, I will use DESeq2 to identify differentially expressed genes between male and female NPCs and ESCs and compare them. 
+
+# Load and prep data
+
+```{r, warning=FALSE, message=FALSE}
+path <- "/home/aydins/DO_mESC_project/ESC_NPC_eQTL_comparison/"
+load("~/DO_mESC_project/ENSMUSGid_to_symbol_v91.RData")
+
+load(paste0(path, "/data/DO_mNPC_paired_eQTL_forMapping.RData"))
+#load("~/Downloads/DO_mNPC_paired_eQTL_forMapping.RData")
+npc.genes <- filter(gene.info, ensembl_gene_id %in% rownames(npc.expr))
+raw.expr.npc_rna <- npc.raw.expr
+expr.npc_rna  <- npc.expr
+covarTidy.npc_rna <- npc.covarTidy
+exprComBat.npc_rna <- npc.expr.ComBat
+expr.npc_rna <- 10^(exprComBat.npc_rna) - 1 #  exp(x) - 1 
+expr.npc_rna <- t(expr.npc_rna)
+rm(npc.exprZ,npc.expr,npc.probs,npc.kinship_loco,npc.covarTidy,npc.covar, npc.raw.expr)
+
+
+coldata <- data.frame(sex=as.factor(covarTidy.npc_rna$sex))
+rownames(coldata) <- covarTidy.npc_rna$sampleid
+raw.expr.npc_rna.int <- raw.expr.npc_rna %>% as.data.frame() %>% mutate_all(as.integer) %>% as.matrix()
+rownames(raw.expr.npc_rna.int) <- rownames(raw.expr.npc_rna)
+
+# load pc3 genes from the other notebook
+load("DO_mNPC_figures_files/esc_pc3.RData")
+
+# ESCs
+load(paste0(path,"data/DO_mESC_paired_eQTL_forMapping.RData"))
+#load("~/Downloads/DO_mESC_paired_eQTL_forMapping.RData")
+esc.genes <- filter(gene.info, ensembl_gene_id %in% rownames(esc.expr))
+raw.expr.esc_rna <- esc.raw.expr
+expr.esc_rna <- esc.expr
+exprZ.esc_rna <- esc.exprZ
+kinship_loco.esc_rna <- esc.kinship_loco
+probs.esc_rna <- esc.probs
+covar.esc_rna <- esc.covar
+covarTidy.esc_rna <- covarTidy
+# for some reason ComBat can't find the batches! it runs correctly on the cluster with R/3.4.4 so I will get it from there.
+# # batch correct 
+# dat <- log10(expr.esc_rna+1) # log(1+x) 
+# mod <- model.matrix(~ sex, data=covarTidy.esc_rna)
+# exprComBat <- ComBat(dat=dat, batch=covarTidy$libraryprep, mod=mod, 
+#     par.prior=TRUE, prior.plots=FALSE)
+exprComBat.esc_rna <- esc.expr.ComBat
+expr.esc_rna <- 10^(exprComBat.esc_rna)-1#  exp(x) - 1 
+expr.esc_rna <- t(expr.esc_rna)
+rm(esc.expr, esc.exprZ, esc.kinship_loco, esc.probs, esc.expr.ComBat, esc.raw.expr,covarTidy)
+coldata.esc <- data.frame(sex=as.factor(covarTidy.esc_rna$sex))
+rownames(coldata.esc) <- covarTidy.esc_rna$sampleid
+raw.expr.esc_rna.int <- raw.expr.esc_rna %>% as.data.frame() %>% mutate_all(as.integer) %>% as.matrix()
+rownames(raw.expr.esc_rna.int) <- rownames(raw.expr.esc_rna)
+
+```
+
+# DESeq {.tabset .tabset-fade .tabset-pills}
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+dds.matrix <- DESeqDataSetFromMatrix(countData = (raw.expr.npc_rna.int), 
+                              colData = coldata,
+                              design = ~sex)
+
+dds <- DESeq(dds.matrix)
+res <- results(dds, contrast=c("sex","F","M"),alpha=0.05)
+res.df <- res %>%  as.data.frame() %>% rownames_to_column() %>% rename(ensembl_gene_id=rowname) %>% left_join(gene.info)  %>% 
+  mutate(significant = ifelse(padj<0.05,"FDR<0.05", "Not Sig")) %>% left_join(.,gene.info) %>% arrange(padj) %>% dplyr::rename(id=mgi_symbol)
+
+
+dds.matrix.esc_rna <- DESeqDataSetFromMatrix(countData = (raw.expr.esc_rna.int), 
+                              colData = coldata.esc,
+                              design = ~sex)
+
+dds.esc_rna <- DESeq(dds.matrix.esc_rna)
+res.esc_rna <- results(dds.esc_rna, contrast=c("sex","F","M"),alpha=0.05)
+res.esc_rna.df <- res.esc_rna %>%  as.data.frame() %>% rownames_to_column() %>% rename(ensembl_gene_id=rowname) %>% left_join(gene.info)  %>% 
+  mutate(significant = ifelse(padj<0.05,"FDR<0.05", "Not Sig")) %>% left_join(.,gene.info) %>% arrange(padj) %>% dplyr::rename(id=mgi_symbol)
+
+#merge
+shared.genes <- intersect(res.df$ensembl_gene_id,res.esc_rna.df$ensembl_gene_id)
+
+merged.res <- filter(res.df, ensembl_gene_id %in%shared.genes)  %>%
+  dplyr::rename(NPC.log2FoldChange = log2FoldChange, NPC.significant=significant) %>% 
+  dplyr::select(NPC.log2FoldChange, ensembl_gene_id,NPC.significant) %>%
+  left_join(., select(rename(res.esc_rna.df, ESC.log2FoldChange=log2FoldChange,ESC.significant=significant),ESC.log2FoldChange,ESC.significant,ensembl_gene_id)) %>% left_join(gene.info) %>% arrange(NPC.log2FoldChange)
+
+# run for batch1
+# subsetting for only batch 1 expression
+batch1.samples <- filter(covarTidy.esc_rna,libraryprep == 1)
+
+coldata.batch1 <-data.frame(sex=as.factor(filter(covarTidy.esc_rna,sampleid %in% batch1.samples$sampleid)$sex))
+rownames(coldata.batch1) <- batch1.samples$sampleid
+dds.matrix.batch1 <- DESeqDataSetFromMatrix(countData = (raw.expr.esc_rna.int[,batch1.samples$sampleid]), 
+                              colData = coldata.batch1,
+                              design = ~sex)
+
+dds.batch1 <- DESeq(dds.matrix.batch1)
+res.batch1 <- results(dds.batch1, contrast=c("sex","F","M"),alpha=0.05)
+res.batch1.df <- res.batch1 %>% as.data.frame() %>% rownames_to_column() %>% rename(ensembl_gene_id=rowname) %>% left_join(gene.info)  %>% 
+  mutate(significant = ifelse(padj<0.05,"FDR<0.05", "Not Sig")) %>% left_join(.,gene.info) %>% arrange(padj) %>% dplyr::rename(id=mgi_symbol)
+
+# run for batch2
+batch2.samples <- filter(covarTidy.esc_rna,libraryprep == 2)
+coldata.batch2 <-data.frame(sex=as.factor(filter(covarTidy.esc_rna,sampleid %in% batch2.samples$sampleid)$sex))
+rownames(coldata.batch2) <- batch2.samples$sampleid
+dds.matrix.batch2 <- DESeqDataSetFromMatrix(countData = (raw.expr.esc_rna.int[,batch2.samples$sampleid]), 
+                              colData = coldata.batch2,
+                              design = ~sex)
+
+dds.batch2 <- DESeq(dds.matrix.batch2)
+res.batch2 <- results(dds.batch2, contrast=c("sex","F","M"),alpha=0.05)
+res.batch2.df <- res.batch2 %>% as.data.frame() %>% rownames_to_column() %>% rename(ensembl_gene_id=rowname) %>% left_join(gene.info)  %>% 
+  mutate(significant = ifelse(padj<0.05,"FDR<0.05", "Not Sig")) %>% left_join(.,gene.info) %>% arrange(padj) %>% dplyr::rename(id=mgi_symbol) %>% filter(!is.na(padj))
+
+
+# run DESeq on batch corrected data
+
+
+```
+
+## NPC results
+There are `r nrow(filter(res.df, padj<0.05))` sexually dimorphic (i.e. differentially expressed between females and males) genes in the NPCs. `r nrow(filter(res.df, padj<0.05 & log2FoldChange >0))` genes are upregulated and `r nrow(filter(res.df, padj<0.05 & log2FoldChange <0))` are downregulated in females in contrast to males. 
+
+```{r, fig.height=5, fig.width=12}
+# res.df %>% 
+#   ggplot(.)+aes(x=log2FoldChange,y=-log10(pvalue))+
+#   geom_point(aes(col=significant))+scale_color_manual(values=c("red", "black")) -> p
+# #p+geom_text_repel(data=filter(res.df, padj<0.05),aes(label=mgi_symbol))
+# p+ggtitle("NPC")+xlab("log2 fold change")+ylab("-log10( pvalue )")
+p1 <- as.grob(~plotMA(res,main="NPC"))
+
+point.cols <- res.df %>% mutate(cols = ifelse(significant=="FDR<0.05","red","black")) %>% dplyr::select(cols)
+show <- as.data.frame(res.df[1:10, c("log2FoldChange", "padj", "id")])
+DEGreport::degVolcano(res.df[,c("log2FoldChange", "padj")], plot_text = show, shade.alpha=0, point.colour =point.cols$cols ,point.outline.colour = point.cols$cols)+theme_cowplot()+ggtitle("NPC") -> p2
+
+plot_grid(p1,p2,nrow=1,labels=c("A","B")) 
+```
+
+
+## ESC results - Full data
+There are `r nrow(filter(res.esc_rna.df, padj<0.05))` sexually dimorphic (i.e. differentially expressed between females and males) genes in the ESCs. `r nrow(filter(res.esc_rna.df, padj<0.05 & log2FoldChange >0))` genes are upregulated and `r nrow(filter(res.esc_rna.df, padj<0.05 & log2FoldChange <0))` are downregulated in females in contrast to males. 
+
+```{r, fig.height=5,fig.width=12}
+p1<- as.grob(~plotMA(res.esc_rna,main=("ESC")))
+
+point.cols <- res.esc_rna.df %>% mutate(cols = ifelse(significant=="FDR<0.05","red","black")) %>% dplyr::select(cols)
+show <- as.data.frame(res.esc_rna.df[1:10, c("log2FoldChange", "padj", "id")])
+DEGreport::degVolcano(res.esc_rna.df[,c("log2FoldChange", "padj")], plot_text = show, shade.alpha=0, point.colour = point.cols$cols,point.outline.colour = point.cols$cols)+theme_cowplot()+ggtitle("ESC") -> p2
+
+plot_grid(p1,p2,nrow=1,labels=c("A","B"))
+```
+
+## ESC results: batch1 and batch2
+
+There are `r nrow(filter(res.batch1.df, padj<0.05))` sexually dimorphic (i.e. differentially expressed between females and males) genes in the ESC batch 1 and  `r nrow(filter(res.batch2.df, padj<0.05))` in batch 2 with `r length(intersect((res.batch1.df %>% filter(padj < 0.05))$ensembl_gene_id,(res.batch2.df %>% filter(padj < 0.05))$ensembl_gene_id))` shared between the two.
+
+```{r, fig.height=12, fig.width=12}
+
+esc.batch1.sex.diff.genes <- res.batch1.df %>% filter(padj < 0.05)
+esc.batch2.sex.diff.genes <- res.batch2.df %>% filter(padj < 0.05)
+esc.shared.sex.diff.genes <- intersect(esc.batch1.sex.diff.genes$ensembl_gene_id,esc.batch2.sex.diff.genes$ensembl_gene_id)
+
+sex.diff.genes.overlap <- euler(c("batch1"=nrow(esc.batch1.sex.diff.genes)-length(esc.shared.sex.diff.genes),
+                            "batch2"=nrow(esc.batch2.sex.diff.genes)-length(esc.shared.sex.diff.genes),
+                            "batch1&batch2"=length(esc.shared.sex.diff.genes)))
+
+p <- plot(sex.diff.genes.overlap,quantities = TRUE)
+
+show <- filter(res.batch1.df, padj<0.05)[1:10, c("log2FoldChange", "padj", "id")]
+point.cols <- res.batch1.df %>% mutate(cols = ifelse(significant=="FDR<0.05","red","black")) %>% dplyr::select(cols)
+DEGreport::degVolcano(res.batch1.df[,c("log2FoldChange", "padj")], 
+                      plot_text = show, shade.alpha = 0, point.colour = point.cols$cols, point.outline.colour = point.cols$cols)+theme_classic()+ggtitle("Batch 1") -> p1
+
+
+show2 <- filter(res.batch2.df, padj<0.05)[1:10, c("log2FoldChange", "padj", "id")]
+point.cols2 <- res.batch2.df  %>% mutate(cols = ifelse(significant=="FDR<0.05","red","black")) %>% dplyr::select(cols)
+DEGreport::degVolcano(res.batch2.df[,c("log2FoldChange", "padj")], 
+                      plot_text = show2, shade.alpha = 0, point.colour = point.cols2$cols, point.outline.colour = point.cols2$cols)+theme_classic()+ggtitle("Batch 2") -> p2
+
+merged.res.esc <- full_join(res.batch1.df,res.batch2.df, by=c("ensembl_gene_id","id"),suffix=c("_1","_2")) %>%
+  filter(padj_1 <0.05 | padj_2<0.05) %>% filter(!is.na(significant_2))
+
+ggplot(merged.res.esc,aes(y=log2FoldChange_1,x=log2FoldChange_2))+
+  geom_point(aes(col=significant_1,shape=significant_2),size=3,alpha=0.5)+
+  geom_hline(yintercept=0)+geom_vline(xintercept=0)+
+  #geom_text_repel(data=filter(merged.res,NPC.significant=="FDR<0.05",
+  #                            ESC.significant=="FDR<0.05")[1:10,],aes(label=mgi_symbol))+
+  xlab("log2 fold change in batch1 ESCs")+
+  ylab("log2 fold change in batch2 ESCs")+labs(col="In batch1",shape="In batch2")+theme_cowplot()-> p3
+top_row <- plot_grid(p,p1,p2, labels=c("A","B","C"), rel_widths = c(0.7,1,1),nrow=1)
+plot_grid(top_row,p3,nrow=2,labels=c("","D"),rel_widths = c(1,0.9),rel_heights = c(1.1,1.5))
+
+```
+
+## ESC results: Batch corrected data
+
+
+# Results {.tabset .tabset-fade .tabset-pills}
+
+## Comparison of sexually dimorphic genes in ESCs and NPCs
+What is the overlap in sexually dimorphic genes between ESC and NPC? I am only looking at genes expressed in both cell types. 
+```{r, fig.height=12, fig.width=12}
+
+npc.sex.diff.genes <- res.df %>% filter(padj < 0.05, ensembl_gene_id %in% shared.genes)
+esc.sex.diff.genes <- res.esc_rna.df %>% filter(padj<0.05, ensembl_gene_id %in% shared.genes)
+shared.sex.diff.genes <- intersect(npc.sex.diff.genes$ensembl_gene_id,esc.sex.diff.genes$ensembl_gene_id)
+sex.diff.genes.overlap <- euler(c("ESC"=nrow(esc.sex.diff.genes)-length(shared.sex.diff.genes),
+                            "NPC"=nrow(npc.sex.diff.genes)-length(shared.sex.diff.genes),
+                            "ESC&NPC"=length(shared.sex.diff.genes)))
+
+p <- plot(sex.diff.genes.overlap,quantities = TRUE)
+
+show <- filter(res.df, padj<0.05, ensembl_gene_id %in% shared.genes)[1:10, c("log2FoldChange", "padj", "id")]
+point.cols <- filter(res.df, ensembl_gene_id %in% shared.genes) %>% mutate(cols = ifelse(significant=="FDR<0.05","red","black")) %>% dplyr::select(cols)
+DEGreport::degVolcano(res.df[res.df$ensembl_gene_id %in% shared.genes,c("log2FoldChange", "padj")], 
+                      plot_text = show, shade.alpha = 0, point.colour = point.cols$cols, point.outline.colour = point.cols$cols)+theme_classic()+ggtitle("NPC") -> p1
+
+
+show <- filter(res.esc_rna.df, padj<0.05, ensembl_gene_id %in% shared.genes)[1:10, c("log2FoldChange", "padj", "id")]
+point.cols <- filter(res.esc_rna.df, ensembl_gene_id %in% shared.genes)  %>% mutate(cols = ifelse(significant=="FDR<0.05","red","black")) %>% dplyr::select(cols)
+DEGreport::degVolcano(res.esc_rna.df[res.esc_rna.df$ensembl_gene_id %in% shared.genes,c("log2FoldChange", "padj")], 
+                      plot_text = show,shade.alpha = 0, point.colour = point.cols$cols, point.outline.colour = point.cols$cols)+theme_classic()+ggtitle("ESC") -> p2
+
+ggplot(filter(merged.res, ESC.significant =="FDR<0.05" | NPC.significant =="FDR<0.05"),aes(y=NPC.log2FoldChange,x=ESC.log2FoldChange))+
+  geom_point(aes(col=NPC.significant,shape=ESC.significant),size=3,alpha=0.5)+
+  xlim(-1,1)+ylim(-1,1)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+
+  #geom_text_repel(data=filter(merged.res,NPC.significant=="FDR<0.05",
+  #                            ESC.significant=="FDR<0.05")[1:10,],aes(label=mgi_symbol))+
+  xlab("log2 fold change in ESCs")+ylab("log2 fold change in NPCs")+labs(col="In NPCs",shape="In ESCs")+theme_cowplot()-> p3
+top_row <- plot_grid(p,p1,p2, labels=c("A","B","C"), rel_widths = c(0.5,1,1),nrow=1)
+plot_grid(top_row,p3,nrow=2,labels=c("","D"),rel_widths = c(1,0.9),rel_heights = c(1.1,1.5))
+
+```
+
+
+## Are genes driving sex differences in ESCs differentially expressed in NPCs?
+
+I am looking if and how much at the genes that drive sex differences in ESCs are differentially expressed in NPCs?
+
+```{r, fig.height=12,fig.width=11}
+res.df %>%
+  filter(ensembl_gene_id %in% pc3.loadings$ensembl_gene_id) %>% ggplot(.)+aes(x=log2FoldChange,y=-log10(pvalue))+
+  geom_point(aes(col=significant))+scale_color_manual(values=c("red", "black")) -> p
+p+geom_text_repel(data=(filter(res.df, ensembl_gene_id %in% pc3.loadings$ensembl_gene_id, padj<0.05))[1:10,],aes(label=id))+
+  ggtitle("NPC")+xlab("log2 fold change")+ylab("-log10( pvalue )")+theme_cowplot() -> p1
+
+res.esc_rna.df %>%
+  filter(ensembl_gene_id %in% pc3.loadings$ensembl_gene_id) %>% ggplot(.)+aes(x=log2FoldChange,y=-log10(pvalue))+
+  geom_point(aes(col=significant))+scale_color_manual(values=c("red", "black")) -> p
+p+geom_text_repel(data=(filter(res.esc_rna.df, ensembl_gene_id %in% pc3.loadings$ensembl_gene_id, padj<0.05))[1:10,],aes(label=id))+
+  ggtitle("ESC") +xlab("log2 fold change")+ylab("-log10( pvalue )")+theme_cowplot()-> p2
+
+ggplot(filter(merged.res, ensembl_gene_id %in% pc3.loadings$ensembl_gene_id),aes(y=NPC.log2FoldChange,x=ESC.log2FoldChange))+
+  geom_point(aes(col=NPC.significant,shape=ESC.significant),size=3,alpha=0.7)+
+  xlim(-1,1)+ylim(-1,1)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+
+  #geom_text_repel(data=filter(merged.res,NPC.significant=="FDR<0.05",
+  #                            ESC.significant=="FDR<0.05")[1:10,],aes(label=mgi_symbol))+
+  xlab("log2 fold change in ESCs")+ylab("log2 fold change in NPCs")+labs(col="In NPCs",shape="In ESCs")+theme_cowplot()-> p3
+
+top_row <- plot_grid(p2,p1, align="h", labels = c("A","B"))
+plot_grid(top_row,p3,nrow=2,rel_heights = c(1,1.5), rel_widths = c(1,0.6),labels=c("","C"))
+```
+
+
+
+```{r}
+g.shared.esc.diff.genes <-  gprofiler2::gost(query = esc.shared.sex.diff.genes, 
+                 organism = "mmusculus",
+                 significant = TRUE, 
+                 domain_scope = "custom",
+                 custom_bg = esc.genes$ensembl_gene_id,evcodes = TRUE)
+
+gprofiler2::gostplot(g.shared.esc.diff.genes)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
