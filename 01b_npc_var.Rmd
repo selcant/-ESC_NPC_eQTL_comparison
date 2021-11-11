@@ -1,0 +1,8 @@
+---
+title: "Variation in NPC transcriptome"
+output: html_document
+---
+
+Add here:
+
+- Analaysis of NPC transcriptome: statistical overview, PCA, GSVA, WGCNA?, any other characterization you think is needed. 

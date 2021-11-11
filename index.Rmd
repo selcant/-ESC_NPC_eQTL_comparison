@@ -1,0 +1,8 @@
+---
+title: "Comparison of DO ESC and NPC transcriptome"
+output: html_document
+---
+
+
+
+This website is the central location for analyses performed by Selcan Aydin related to DO mNPC project. Here, I am summarizing the results from the comparative analysis of DO ESC and NPC transcriptome.

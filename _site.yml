@@ -1,0 +1,50 @@
+name: "DO_ESC_NPC_website"
+output_dir: "_site"
+exclude: ["renv", "renv.lock", "*.tsv"]
+
+#theme: "theme.css" # darkly from bootswatch.
+navbar:
+  title: "<img id=\"logo\" style=\"width: 110px;\" src=\"figures/logo.jpg\" />"
+  left:
+    - icon: favicon
+    - text: "Overview"
+      menu:
+      - text: "Experimental overview"
+        # href: 01a_overview.html
+      - text: "Variation in NPC transcriptome"
+        # href: 01b_npc_var.html
+      - text: "Covariation in ESC and NPC transcriptome"
+        # href: 01c_esc_npc_covar.html
+      - text: "Differentially expressed genes in NPCs"
+        # href: 01d_esc_npc_deseq.html
+    - text: "Genetic mapping and mediation"
+      menu:
+      - text: "Genetic architecture of the NPC transcriptome"
+        href: 
+      - text: "Integrated genetic map of the ESC and NPC transcriptomes"
+        href: 
+      - text: "Mediation analysis identifies known and unique interactions across cell states"
+        href: 
+      - text: "Mediation of QTL hotspots reveals regulatory proteins"
+        href: 
+  right:
+    - icon: fa-paper-plane
+      href: mailto:<selcan.aydin@jax.org, steven.munger@jax.org>
+  
+  source_url: TRUE
+  
+output: 
+  html_document:
+    code_download: true
+    theme: flatly
+    highlight: textmate
+    toc_depth: 4
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    includes:
+      #in_header: [include_logo.html]
+      #before_body: include_logo.html
+      after_body: include_footer.html
+    
+
