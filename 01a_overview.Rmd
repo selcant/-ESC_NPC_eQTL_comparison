@@ -4,9 +4,228 @@ output: html_document
 ---
 
 
-To add:
+```{r setup}
 
-- code chunk to load all libraries
-- code chunk to load all data sets + annotations 
-- code chunk to visualize overview of NPC dataset + overlap to ESC
--
+options(stringsAsFactors = F)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_knit$set(progress=FALSE)
+
+```
+
+
+```{r libraries, warning=FALSE, message=FALSE}
+
+
+# qtl mapping + mediation
+library(intermediate) # "simecek/intermediate"
+library(qtl2) 
+
+# # plotting
+library(ggpubr)
+library(igraph)
+library(ggraph)
+library(pheatmap)
+library(cowplot)
+library(GGally)
+library(corrplot)
+
+# annotations + general genomic things
+#library(biomaRt)
+library(GenomicRanges)
+
+# data processing
+library(Hmisc) # rcorr
+library(gprofiler2)
+library(sva)
+library(WebGestaltR)
+
+library(readxl)
+library(tidyverse)
+select <- dplyr::select # I am adding this explicitly
+rename <- dplyr::rename # I am adding this explicitly
+
+# setting path
+library(here)
+
+```
+
+```{r functions}
+
+
+```
+
+```{r load_data}
+
+# Note: I am keeping v91 ids + annotations for these two data sets. I am not going to add the protein data to these so I think it is okay. 
+
+# The mediations with ESC/NPC transcript were done for all NPC eQTL lod >6 using annotations from v84 ensembl ids and Duy's script that adds LOD at the peak, causality test. I am not using the causality test to filter anything but I do use lod drop z-threshold (z< -4) and positional threshold (diff < 10Mb) for filtering.
+
+# I am re-writing the overlap script for ESC/NPC eQTL without the ESC pQTL and will add allele effect correlations to it too . 
+
+all.genes_v91 <- read_tsv( file = here("_data","/ENSMUSGid_to_symbol_v91.txt")) %>% 
+  rename( ensembl_gene_id = `Gene stable ID`,
+          gene_start = `Gene start (bp)`, 
+          gene_end = `Gene end (bp)`, 
+          gene_chr = `Chromosome/scaffold name`,
+          gene_biotype = `Gene type`, 
+          mgi_symbol = `MGI symbol`) %>% 
+  mutate( midpoint = (gene_start+gene_end)/2)
+
+# ESC expression
+load(here("_data/DO_mESC_paired_eQTL_forMapping.RData"))
+raw.expr.esc_rna <- esc.raw.expr
+exprZ.esc_rna <- esc.exprZ
+kinship_loco.esc_rna <- esc.kinship_loco
+probs.esc_rna <- esc.probs
+covar.esc_rna <- esc.covar
+covarTidy.esc_rna <- covarTidy
+exprComBat.esc_rna <- esc.expr.ComBat
+expr.esc_rna <- expm1(exprComBat.esc_rna) # re-transforming since the data was log(x+1) before combat
+expr.esc_rna[expr.esc_rna < 0] <- 0
+expr.esc_rna <- t(expr.esc_rna)
+rm(esc.expr, esc.exprZ, esc.kinship_loco, esc.probs, esc.expr.ComBat, esc.raw.expr, covarTidy, exprComBat.esc_rna, esc.covar, esc.covarTidy)
+
+# NPC expression
+load(here("_data/DO_mNPC_paired_eQTL_forMapping.RData"))
+raw.expr.npc_rna <- npc.raw.expr
+exprZ.npc_rna <- npc.exprZ
+kinship_loco.npc_rna <- npc.kinship_loco
+probs.npc_rna <- npc.probs
+covar.npc_rna <- npc.covar
+covarTidy.npc_rna <- npc.covarTidy
+exprComBat.npc_rna <- npc.expr.ComBat
+expr.npc_rna <- expm1(exprComBat.npc_rna) # re-transforming since the data was log(x+1) before combat
+expr.npc_rna[expr.npc_rna < 0] <- 0
+expr.npc_rna <- t(expr.npc_rna)
+rm(npc.expr, npc.exprZ, npc.kinship_loco, npc.probs, npc.expr.ComBat, npc.raw.expr, covarTidy, exprComBat.npc_rna, npc.covar, npc.covarTidy)
+
+# ESC eQTL map + effects
+load(here("_data/ESC_eQTL_effects.RData"))
+peaks.esc_rna <- peaks
+effects_blup.esc_rna <- effects_blup
+effects_std.esc_rna <- effects_std
+rm(peaks, effects_blup, effects_std)
+
+# Adding effects to eQTL peaks
+peaks.esc_rna.blup <- cbind(peaks.esc_rna, effects_blup.esc_rna) %>%
+  dplyr::rename("ensembl_gene_id" = "phenotype")
+colnames(peaks.esc_rna.blup) <- c(
+  colnames(peaks.esc_rna.blup)[1:2],
+  paste0(colnames(peaks.esc_rna.blup)[3:dim(peaks.esc_rna.blup)[2]], ".esc_rna")
+)
+
+# adding annotations to eQTL peaks with effects
+peaks.esc_rna.wEffs <- peaks.esc_rna.blup %>% 
+  left_join( all.genes_v91) %>% 
+  mutate(midpoint = (gene_start + gene_end) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == gene_chr),
+          diff = abs(midpoint - interp_bp_peak.esc_rna)) %>% 
+  mutate( local.esc_rna = ifelse( same_chrom & 
+                            diff < 10e06, TRUE, FALSE
+    ))%>% 
+  select(-same_chrom, -diff)
+
+
+# NPC eQTL map + effects
+load(here("_data/NPC_eQTL_effects.RData"))
+peaks.npc_rna <- peaks
+effects_blup.npc_rna <- effects_blup
+effects_std.npc_rna <- effects_std
+rm(peaks, effects_blup, effects_std)
+
+# Adding effects to eQTL peaks
+peaks.npc_rna.blup <- cbind(peaks.npc_rna, effects_blup.npc_rna) %>%
+  dplyr::rename("ensembl_gene_id" = "phenotype")
+colnames(peaks.npc_rna.blup) <- c(
+  colnames(peaks.npc_rna.blup)[1:2],
+  paste0(colnames(peaks.npc_rna.blup)[3:dim(peaks.npc_rna.blup)[2]], ".npc_rna")
+)
+
+# adding annotations to eQTL peaks with effects
+peaks.npc_rna.wEffs <- peaks.npc_rna.blup %>% 
+  left_join( all.genes_v91) %>% 
+  mutate(midpoint = (gene_start + gene_end) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == gene_chr),
+          diff = abs(midpoint - interp_bp_peak.npc_rna)) %>% 
+  mutate( local.npc_rna = ifelse( same_chrom & 
+                            diff < 10e06, TRUE, FALSE
+    )) %>% 
+  select(-same_chrom, -diff)
+
+
+# get all genes that contain the union of both data sets + esc/npc gene lists.
+all.genes <- filter(all.genes_v91, ensembl_gene_id %in% c(colnames(exprZ.esc_rna), colnames(exprZ.npc_rna)) )
+esc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.esc_rna))
+npc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.npc_rna))
+
+
+## shared data
+# get the set of shared genes
+shared.genes <- intersect(colnames(expr.esc_rna),colnames(expr.npc_rna))
+
+# get the set of shared samples
+shared.samples <- intersect(rownames(expr.esc_rna)[!grepl("repB",rownames(expr.esc_rna))],
+                            rownames(expr.npc_rna)[!grepl("repB",rownames(expr.npc_rna))])
+
+# let's subset the expression matrices for shared genes + samples 
+shared.expr.npc_rna <- expr.npc_rna[shared.samples,shared.genes ]
+shared.expr.esc_rna  <- expr.esc_rna[shared.samples,shared.genes]
+
+# let's subset the probs matrices
+shared.probs.esc_rna <- probs.esc_rna[ ind=shared.samples]
+shared.probs.npc_rna <- probs.npc_rna[ind=shared.samples]
+
+## merged peaks
+# ESC/NPC eQTL overlap
+load(here("_data","peaks_comparison_10Mb_ESC_NPC.RData")) # peaks.esc.npc.rna
+
+## mediation results
+load(here("_data","DO_mNPC_eQTL_NPC_RNA_mediation_lod6_merged.RData")) ## eqtl_npc_rna_meds
+load(here("_data","DO_mNPC_eQTL_ESC_RNA_mediation_lod6_merged.RData")) ## eqtl_esc_rna_meds
+
+# prep some stuff for plotting:
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>% group_by(chr) %>%
+  summarize(len=max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens/2
+
+# qtl colors
+qtl.colors <- c( esc_rna = "#D55E00", 
+                 npc_rna = "#009E73",
+                 shared = "#CC79A7")
+# founder colors
+founder_colors <- c(AJ = "#F0E442", B6 = "#555555", `129` = "#E69F00", NOD = "#0072B2",
+   NZO = "#56B4E9", CAST = "#009E73", PWK = "#D55E00", WSB = "#CC79A7")
+
+
+```
+
+# Overview of ESC and NPC datasets
+
+```{r,fig.width=10, fig.height=4}
+
+library(eulerr) 
+sample.overlap <- euler(c( "ESC" = nrow(covarTidy.esc_rna)-length(shared.samples), 
+                           "NPC"=nrow(covarTidy.npc_rna)-length(shared.samples), 
+                           "ESC&NPC"=length(shared.samples)) ,shape="ellipse")
+
+gene.overlap <-  euler(c( "ESC" = nrow(esc.genes)-length(shared.genes), 
+                           "NPC"= nrow(npc.genes)-length(shared.genes), 
+                           "ESC&NPC"=length(shared.genes)) ,shape="ellipse")
+
+p1 <- plot(sample.overlap,quantities = TRUE, main='Sample overlap',
+           col=c(qtl.colors[2],qtl.colors[1],qtl.colors[3]), 
+           fill=c(qtl.colors[2],qtl.colors[1],qtl.colors[3]),
+           alpha=0.6)
+p2 <- plot(gene.overlap,quantities = TRUE, main="Gene overlap",
+           col=c(qtl.colors["npc_rna"],qtl.colors["esc_rna"],qtl.colors["shared"]), 
+           fill=c(qtl.colors["npc_rna"],qtl.colors["esc_rna"],qtl.colors["shared"]),
+           alpha=0.6)
+ggarrange(p1,p2,nrow = 1, ncol=2 )  
+
+```
+
+
