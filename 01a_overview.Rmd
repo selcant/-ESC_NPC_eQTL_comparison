@@ -1,6 +1,14 @@
 ---
 title: "Experimental overview"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    df_print: paged
+    code_folding: hide
 ---
 
 
@@ -51,6 +59,20 @@ library(here)
 
 ```{r functions}
 
+# Making downloadable data tables
+# https://www.r-bloggers.com/vignette-downloadable-tables-in-rmarkdown-with-the-dt-package/
+create_dt <- function(x){
+  DT::datatable(x,
+                extensions = 'Buttons',
+                rownames = FALSE, 
+                filter="top",
+                options = list(dom = 'Blfrtip',
+                               buttons = c('copy', 'csv', 'excel'),
+                               pageLength = 5, 
+                               scrollX= TRUE
+                               ))
+  
+}
 
 ```
 
@@ -97,7 +119,7 @@ exprComBat.npc_rna <- npc.expr.ComBat
 expr.npc_rna <- expm1(exprComBat.npc_rna) # re-transforming since the data was log(x+1) before combat
 expr.npc_rna[expr.npc_rna < 0] <- 0
 expr.npc_rna <- t(expr.npc_rna)
-rm(npc.expr, npc.exprZ, npc.kinship_loco, npc.probs, npc.expr.ComBat, npc.raw.expr, covarTidy, exprComBat.npc_rna, npc.covar, npc.covarTidy)
+rm(npc.expr, npc.exprZ, npc.kinship_loco, npc.probs, npc.expr.ComBat, npc.raw.expr, exprComBat.npc_rna, npc.covar, npc.covarTidy)
 
 # ESC eQTL map + effects
 load(here("_data/ESC_eQTL_effects.RData"))
@@ -179,9 +201,18 @@ shared.probs.npc_rna <- probs.npc_rna[ind=shared.samples]
 # ESC/NPC eQTL overlap
 load(here("_data","peaks_comparison_10Mb_ESC_NPC.RData")) # peaks.esc.npc.rna
 
+# there are some significant NPC eQTL that should be shared but is not. See below, might be worth fixing those.
+# peaks.esc.npc.rna %>% 
+#   filter( lod.esc_rna > 5 & lod.npc_rna >7.5 & match != "shared" & abs(interp_bp_peak.esc_rna-interp_bp_peak.npc_rna) < 10e6)
+
 ## mediation results
 load(here("_data","DO_mNPC_eQTL_NPC_RNA_mediation_lod6_merged.RData")) ## eqtl_npc_rna_meds
 load(here("_data","DO_mNPC_eQTL_ESC_RNA_mediation_lod6_merged.RData")) ## eqtl_esc_rna_meds
+
+## adding cc_variants for association mapping
+query_variants <- create_variant_query_func(here("_data/cc_variants.sqlite"))
+query_genes <- create_gene_query_func("_data/mouse_genes_mgi.sqlite")
+
 
 # prep some stuff for plotting:
 uchr <- c(as.character(1:19), "X")
@@ -193,9 +224,9 @@ chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
 chrom_lens_midpt <- chrom_lens_offset + chrom_lens/2
 
 # qtl colors
-qtl.colors <- c( esc_rna = "#D55E00", 
-                 npc_rna = "#009E73",
-                 shared = "#CC79A7")
+qtl.colors <- c( esc_rna = "#009E73", 
+                 npc_rna = "#D55E00",
+                 shared = "#7570B3")
 # founder colors
 founder_colors <- c(AJ = "#F0E442", B6 = "#555555", `129` = "#E69F00", NOD = "#0072B2",
    NZO = "#56B4E9", CAST = "#009E73", PWK = "#D55E00", WSB = "#CC79A7")
@@ -203,29 +234,28 @@ founder_colors <- c(AJ = "#F0E442", B6 = "#555555", `129` = "#E69F00", NOD = "#0
 
 ```
 
-# Overview of ESC and NPC datasets
+Here, I am contrasting global gene expression and eQTL mapping results between embryonic stem cells (ESCs) and neural progenitor cells (NPCs) derived from many Diversity Outbred (DO) mice. We analyzed RNA-seq data from a total of `r nrow(expr.esc_rna)` ESC and `r nrow(expr.npc_rna)` NPC lines; 127 lines had RNA-seq data for both ESCs and NPCs. After filtering out genes with low expression and genes not expressed in at least half of the samples, we detect `r formatC(ncol(expr.esc_rna),big.mark = ",")` in ESCs and `r formatC(ncol(expr.npc_rna),big.mark = ",")` in NPCs, with `r formatC(length(shared.genes),big.mark = ",")` genes detected in both cell types. The filtered data was then normalized to the upper quartile value (each read count is divided by the 75th percentile of the read counts across samples) to allow for comparison of expression measures within and across cell-types. Both data-sets were generated in batches, and we used ComBat as implemented in the R package sva to correct for batch effects while controlling for the sexes of lines in each batch. Both ESC and NPC expression values were transformed to rank normal scores prior to eQTL mapping.
 
-```{r,fig.width=10, fig.height=4}
 
-library(eulerr) 
-sample.overlap <- euler(c( "ESC" = nrow(covarTidy.esc_rna)-length(shared.samples), 
-                           "NPC"=nrow(covarTidy.npc_rna)-length(shared.samples), 
-                           "ESC&NPC"=length(shared.samples)) ,shape="ellipse")
+In this first tab, I focus on the NPC transcriptome investigating the variation in gene expression in DO mNPCs using a variety of methods including: principal component analysis (PCA), gene set variation analysis (GSVA) and weighted correlation network analysis (WGCNA). Then, I looked at the co-variation across DO mNPCs and mESCs by looking at the agreement between transcriptomes within genetically identical samples and between genes across cell states. Further, there are genes uniquely expressed in each cell state which I functionally characterized using overrepresentation analysis (ORA). I used Wilcoxon rank sum test to identify differentially expressed genes in mNPCs in contrast to mESCs and functionally characterized up and down regulated genes using ORA.
 
-gene.overlap <-  euler(c( "ESC" = nrow(esc.genes)-length(shared.genes), 
-                           "NPC"= nrow(npc.genes)-length(shared.genes), 
-                           "ESC&NPC"=length(shared.genes)) ,shape="ellipse")
+In the second tab, I am presenting the genetic mapping and mediation results with DO mNPC transcripts. First, I calculate the heritability of each transcript in DO mNPCs and present the DO mNPC eQTL map. Next, I integrate the DO mNPC eQTL map with the mESC eQTL map and compare the allel effects of overlapping eQTL. Mediation analysis results are summarized in two notebooks where the first one is summarizing the full mediation results focusing on local and distant eQTL with best mediators being ESC or NPC transcripts. Second notebook describes the DO mNPC eQTL hotspots, their characterization and mediation. 
 
-p1 <- plot(sample.overlap,quantities = TRUE, main='Sample overlap',
-           col=c(qtl.colors[2],qtl.colors[1],qtl.colors[3]), 
-           fill=c(qtl.colors[2],qtl.colors[1],qtl.colors[3]),
-           alpha=0.6)
-p2 <- plot(gene.overlap,quantities = TRUE, main="Gene overlap",
-           col=c(qtl.colors["npc_rna"],qtl.colors["esc_rna"],qtl.colors["shared"]), 
-           fill=c(qtl.colors["npc_rna"],qtl.colors["esc_rna"],qtl.colors["shared"]),
-           alpha=0.6)
-ggarrange(p1,p2,nrow = 1, ncol=2 )  
 
-```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
