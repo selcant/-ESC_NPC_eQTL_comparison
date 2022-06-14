@@ -1,9 +1,15 @@
 <!DOCTYPE html>
+<script type="text/javascript">
+onload = function(){
+	document.getElementById("lastModified").innerHTML = "Last update on " + document.lastModified.split(" ")[0];
+}
+</script>
+
 <html>
 <hr />
 <p style="text-align: center;">A work by <a href="https://selcan-aydin.netlify.app/">Selcan Aydin</a></p>
 <p style="text-align: center;"><span style="color: #808080;"><em>selcan.aydin@jax.org</em></span></p>
-<p style="text-align: center;"><span style="color: #808080;">Last update on <script> document.write(new Date().toLocaleDateString()); </script></span></p>
+<p style="text-align: center;"><span style="color: #808080;"><span id="lastModified"></span></p>
 
 <!-- Add icon library -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
