@@ -177,8 +177,8 @@ peaks.npc_rna.wEffs <- peaks.npc_rna.blup %>%
 
 # get all genes that contain the union of both data sets + esc/npc gene lists.
 all.genes <- filter(all.genes_v91, ensembl_gene_id %in% c(colnames(exprZ.esc_rna), colnames(exprZ.npc_rna)) )
-esc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.esc_rna))
-npc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.npc_rna))
+esc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.esc_rna)) # note that we are missing annotations for 61 ids, ensembl say they are deprecated.
+npc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.npc_rna)) # note that we are missing annotations for 36 ids, ensembl says they are deprecated.
 
 
 ## shared data
@@ -230,6 +230,73 @@ qtl.colors <- c( esc_rna = "#009E73",
 # founder colors
 founder_colors <- c(AJ = "#F0E442", B6 = "#555555", `129` = "#E69F00", NOD = "#0072B2",
    NZO = "#56B4E9", CAST = "#009E73", PWK = "#D55E00", WSB = "#CC79A7")
+
+# lifr genotypes
+# get_LIFR_genotypes
+# using Dan's code to get LIFR genotypes for the full list of animals
+probs <- probs.npc_rna
+markers <- tibble(name = dimnames(probs[[15]])[[3]]) %>%
+  mutate(name2 = name) %>%
+  separate(name2, into = c("chrom", "pos"), sep = "_", convert = TRUE)
+
+# LIFr SNP is chr15:7116944 (rs50454566)
+mm <- filter(markers, chrom == "15", pos > 7090000, pos < 7130000) # 3 markers
+probs2 <- probs$`15`[, , mm$name]
+
+closest_geno <- function(p, tol = 0.01) {
+  if (sum(abs(p - c(1, 0))) < tol) {
+    return("A")
+  }
+  if (sum(abs(p - c(0, 1))) < tol) {
+    return("B")
+  }
+  if (sum(abs(p - c(0.5, 0.5))) < tol) {
+    return("H")
+  }
+  return(NA)
+}
+call_geno <- function(mat) {
+  # mat is nsamp*8 (haps)
+  # A = A_J
+  # B = B6
+  # C = 129
+  # D = NOD
+  # E = NZO
+  # F = CAST
+  # G = PWK
+  # H = WSB
+  # I want to divide NOD + CAST + PWK + WSB
+  # vs. the other four
+  grp <- c("A", "A", "A", "B", "A", "B", "B", "B")
+  collapsed <- apply(mat, 1, function(x) tapply(x, grp, sum))
+  apply(collapsed, 2, closest_geno)
+}
+
+probs3 <- apply(probs2, 3, call_geno)
+# assert_that(noNA(probs3))
+one <- probs3[, 1] # marker left of Lifr
+two <- probs3[, 2] # closest marker to Lifr
+three <- probs3[, 3] # marker right of Lifr
+# "PB360.49" has an ancestry switch between markers 1 & 2!
+
+
+# Get samples in group A (inbred strains) and group B (wild-derived + NOD)
+inbred <- rownames(probs[[1]])[one == "A" & two == "A" & three == "A"]
+wildder <- rownames(probs[[1]])[one == "B" & two == "B" & three == "B"]
+hets <- rownames(probs[[1]])[one == "H" & two == "H" & three == "H"]
+# cat(inbred, sep="\n", file="lifr_genotype_inbred.txt")
+# cat(wildder, sep="\n", file="lifr_genotype_wildder.txt")
+# cat(hets, sep="\n", file="lifr_genotype_het.txt")
+#
+data_frame(
+  lifr_geno = factor(c(rep("Ref", length(inbred)), c(rep("Alt", length(wildder))), c(rep("Het", length(hets))))),
+  lifr = factor(c(rep(0, length(inbred)), c(rep(1, length(wildder))), c(rep(2, length(hets))))),
+  rowname = c((inbred), (wildder), (hets))
+) %>%
+  mutate(rowname = ifelse(is.na(rowname), "PB360.49_repA", rowname)) -> covar.lifr
+
+covarTidy.npc_rna %>% 
+  left_join( covar.lifr, by = c("sampleid"="rowname")) -> covarTidy.npc_rna
 
 
 ```
