@@ -7,26 +7,26 @@ navbar:
   title: "<img id=\"logo\" style=\"width: 110px;\" src=\"figures/logo.jpg\" />"
   left:
     - icon: favicon
-    - text: "Overview"
+    - text: "NPC Transcriptome"
       menu:
       - text: "Experimental overview"
-        # href: 01a_overview.html
+        href: 01a_overview.html
       - text: "Variation in NPC transcriptome"
-        # href: 01b_npc_var.html
+        href: 01b_npc_var.html
       - text: "Covariation in ESC and NPC transcriptome"
-        # href: 01c_esc_npc_covar.html
-      - text: "Differentially expressed genes in NPCs"
-        # href: 01d_esc_npc_deseq.html
+        href: 01c_esc_npc_covar.html
+      - text: "Differentially expressed genes in NPCs vs ESCs"
+        href: 01d_esc_npc_deseq.html
     - text: "Genetic mapping and mediation"
       menu:
       - text: "Genetic architecture of the NPC transcriptome"
-        href: 
-      - text: "Integrated genetic map of the ESC and NPC transcriptomes"
-        href: 
+        href: 02a_npc_eqtl.html
+      # - text: "Integrated genetic map of the ESC and NPC transcriptomes"
+      #   href: 02b_esc_npc_eqtl.html
       - text: "Mediation analysis identifies known and unique interactions across cell states"
-        href: 
+        href: 02c_npc_med.html
       - text: "Mediation of QTL hotspots reveals regulatory proteins"
-        href: 
+        href: 02d_transband_med.html
   right:
     - icon: fa-paper-plane
       href: mailto:<selcan.aydin@jax.org, steven.munger@jax.org>
