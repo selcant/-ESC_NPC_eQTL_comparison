@@ -1,0 +1,184 @@
+---
+title: ""
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup}
+
+options(stringsAsFactors = F)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_knit$set(progress=FALSE)
+
+```
+
+# Differentially expressed genes in NPCs vs ESCs {.tabset .tabset-fade .tabset-pills}
+
+I am using Wilcoxon rank sum test as an alternative to DESEQ2. I am using upper quantile normalized, batch corrected (using comBAT) gene expression counts for testing. 
+
+Q: Do I need to correct for sex since it is a dominant effect in ESCs or is it okay to leave that in?
+
+```{r wilcoxon_rank_test, cache = TRUE, warning=FALSE, message=FALSE}
+
+expr.npc_rna %>% 
+  as_tibble( rownames = "sampleid") %>% 
+  pivot_longer( colnames(expr.npc_rna), names_to = "ensembl_gene_id", values_to = "npc") %>% 
+  full_join(
+    expr.esc_rna %>% 
+      as_tibble( rownames = "sampleid") %>% 
+      pivot_longer( colnames(expr.esc_rna), names_to = "ensembl_gene_id", values_to = "esc") 
+  ) %>% 
+  filter(sampleid %in% shared.samples, ensembl_gene_id %in% shared.genes) %>% 
+  pivot_longer( cols = c("esc","npc"), names_to = "cell_type", values_to ="expr") -> npc_esc_expr_df
+
+# get adjusted p values
+npc_esc_expr_df %>% 
+  #filter( ensembl_gene_id %in% shared.genes[1:10]) %>% 
+  group_by(ensembl_gene_id) %>% 
+  rstatix::wilcox_test(., expr~cell_type, p.adjust.method = "BH") -> npc_esc_wilcox_p
+
+# get log2fold changes
+npc_esc_expr_df %>% 
+  #filter( ensembl_gene_id %in% shared.genes[1:10]) %>% 
+  group_by(ensembl_gene_id, cell_type) %>% 
+  summarize( expr = mean(expr, na.rm = T)) %>% 
+  ungroup() %>% 
+  pivot_wider( id_cols = "ensembl_gene_id", names_from = "cell_type", values_from ="expr" ) %>% 
+  mutate( log2foldchange = log2(npc/esc)) -> npc_esc_log2fold
+    
+npc_esc_log2fold %>% 
+  left_join( npc_esc_wilcox_p ) -> npc_esc_wilcox_df
+
+```
+
+## Table of differentially expressed genes
+
+Here is the table of differentially expressed genes (FDR <0.05, abs(log2foldchange) > 2).
+
+```{r wilcox_table}
+
+npc_esc_wilcox_df %>% 
+  filter( p <0.05, abs(log2foldchange) > 2) %>% 
+  left_join(all.genes) %>% 
+  select(ensembl_gene_id,
+         mgi_symbol,
+         `Mean expresion in ESCs` = esc,
+         `Mean expression in NPCs` = npc,
+         `Fold Change (log2)`=log2foldchange,
+         FDR = p) %>% 
+  mutate( `Fold Change (log2)` = round(`Fold Change (log2)`,2),
+          `Mean expresion in ESCs`=round(`Mean expresion in ESCs`,2),
+          `Mean expression in NPCs`=round(`Mean expression in NPCs`,2),
+          FDR = formatC(FDR, format = "e", digits = 2)) %>% 
+  arrange(`Fold Change (log2)`) %>% 
+  create_dt()
+
+```
+I can't seem to get WebGestaltR to work properly, keeps erroring out. So instead I am doing ORA with up & down regulated genes.
+
+```{r gsea_diff_genes, cache = TRUE, eval = FALSE, warning=FALSE, message=FALSE}
+
+
+gsea_deg_npc_esc <- WebGestaltR::WebGestaltR(enrichMethod = "GSEA",
+                                         organism = "mmusculus",
+                                         interestGene = select(npc_esc_wilcox_df, ensembl_gene_id, log2foldchange),  
+                                         interestGeneType = "ensembl_gene_id",
+                                         enrichDatabase = c("geneontology_Biological_Process_noRedundant",
+                                                            "geneontology_Cellular_Component_noRedundant",
+                                                            "geneontology_Molecular_Function_noRedundant",
+                                                            "pathway_KEGG",
+                                                            "pathway_Reactome",
+                                                            "pathway_Wikipathway",
+                                                            "network_Transcription_Factor_target",
+                                                            "network_CORUM"), 
+                                         isOutput = TRUE,
+                                         topThr=100)
+
+```
+
+
+## ORA with upregulated genes in NPCs
+
+
+```{r npc_up_genes_ora, cache=TRUE, warning=FALSE, message=FALSE}
+
+npc_esc_wilcox_df %>% 
+  filter( p < 0.05, (log2foldchange) > 2) %>% 
+  select(ensembl_gene_id, log2foldchange) %>% 
+  left_join(all.genes) -> upreg_npc_esc
+
+upreg_npc_esc_ora <- gost(query = upreg_npc_esc$mgi_symbol, 
+                 organism = "mmusculus",
+                 significant = TRUE, 
+                 domain_scope = "custom",
+                 custom_bg = filter(all.genes, ensembl_gene_id %in% shared.genes)$mgi_symbol,
+                 correction_method = "fdr",
+                 evcodes = TRUE)
+upreg_npc_esc_ora$result <- upreg_npc_esc_ora$result %>% filter(term_size <500)
+
+
+```
+
+```{r npc_up_genes_ora_plot, warning=FALSE, message=FALSE}
+
+gostplot(upreg_npc_esc_ora)
+
+
+```
+
+```{r npc_up_genes_ora_table, warning=FALSE, message=FALSE}
+
+upreg_npc_esc_ora$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+## ORA with downregulated genes in NPCs
+
+```{r npc_down_genes, cache=TRUE, warning=FALSE, message=FALSE}
+
+npc_esc_wilcox_df %>% 
+  filter( p <0.05, (log2foldchange) < -2) %>% 
+  select(ensembl_gene_id, log2foldchange) %>% 
+  left_join(all.genes) -> downreg_npc_esc
+
+downreg_npc_esc_ora <- gost(query = downreg_npc_esc$mgi_symbol, 
+                 organism = "mmusculus",
+                 significant = TRUE, 
+                 domain_scope = "custom",
+                 custom_bg = filter(all.genes, ensembl_gene_id %in% shared.genes)$mgi_symbol,
+                 correction_method = "fdr",
+                 evcodes = TRUE)
+downreg_npc_esc_ora$result <- downreg_npc_esc_ora$result %>% filter(term_size <500)
+
+```
+
+
+
+```{r npc_down_genes_ora_plot, warning=FALSE, message=FALSE} 
+
+gostplot(downreg_npc_esc_ora)
+
+```
+
+
+```{r npc_down_genes_ora_table, warning=FALSE, message=FALSE} 
+
+downreg_npc_esc_ora$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+
+
