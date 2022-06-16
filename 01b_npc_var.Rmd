@@ -1,5 +1,5 @@
 ---
-title: "Variation in NPC transcriptome"
+title: ""
 output:
   html_document:
     toc: true
@@ -19,19 +19,8 @@ knitr::opts_knit$set(progress=FALSE)
 
 ```
 
-Add here:
 
--   Analysis of NPC transcriptome:
-
-    -   statistical overview - done.
-    -   PCA - done.
-    -   most/least variable 5th percentile -
-    -   GSVA?
-    -   WGCNA?
-    -   any other characterizations?
-
-
-# NPC transcriptome {.tabset .tabset-fade .tabset-pills}
+# Variation in NPC transcriptome {.tabset .tabset-fade .tabset-pills}
 
 There are `r formatC(ncol(expr.npc_rna), big.mark = ",")` many genes measured across `r nrow(expr.npc_rna)` samples. 
 
@@ -273,23 +262,25 @@ g.low.var$result <- g.low.var$result %>% filter(term_size < 660)
 
 ```
 
-ORA results with most variable (highest .05% CV) genes in mNPCs:
+ORA results with most variable (highest .05% CV) genes in mNPCs (FDR <0.01):
 
 ```{r ora_most_var}
 
 g.high.var$result %>% 
   select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
   mutate_if( is.numeric, formatC, digits =2) %>% 
   create_dt()
 
 ```
 
-ORA results with least variable (lowest .05% CV) genes in mNPCs:
+ORA results with least variable (lowest .05% CV) genes in mNPCs (FDR <0.01):
 
 ```{r ora_least_var}
 
 g.low.var$result %>% 
   select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
   mutate_if( is.numeric, formatC, digits =2) %>% 
   create_dt()
 
@@ -298,7 +289,7 @@ g.low.var$result %>%
 
 ## Gene set variation analysis
 
-```{r npc_rna_gsva, cache=TRUE}
+```{r npc_rna_gsva, cache=TRUE, warning=FALSE, message=FALSE}
 
 library(GSVA)
 library(GO.db)
@@ -379,6 +370,7 @@ gsva_rna_tukey %>%
 
 ```
 
+Below are the list of GO Biological processes that show significant differences by sex or genotype at the *Lifr* locus. 
 
 ```{r gsva_results_table}
 
@@ -393,9 +385,6 @@ signif_results_tukey_rna %>%
 
 ```
 
-## WGCNA
-
-Do I want to do WGCNA?
 
 
 
