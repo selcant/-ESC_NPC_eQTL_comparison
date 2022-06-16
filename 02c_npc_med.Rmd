@@ -1,0 +1,390 @@
+---
+title: ""
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    df_print: paged
+    code_folding: hide
+---
+
+
+```{r setup}
+
+options(stringsAsFactors = F)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_knit$set(progress=FALSE)
+
+```
+
+# Mediators of local eQTL {.tabset .tabset-fade .tabset-pills}
+
+## eQTL with best mediator NPC rna
+
+```{r}
+
+peaks.esc.npc.rna %>% 
+  filter( lod.npc_rna > 7.5, lod.esc_rna >7.5, match %in% c("npc_rna","shared"), local.npc_rna ==T) -> npc_eqtl_local
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_local %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 2) %>% 
+  filter( target.symbol == mediator.symbol) %>% 
+  slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, mediator.symbol , target.chr, target.lod,mediation.lod,  type) %>% 
+  filter(type =="npc") %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+```
+
+
+## Mediation example
+
+Making a LOD plot for *Gbx2* with mediation results overlaid to examplify QTL mapping and mediaiton analysis. 
+
+```{r gbx2_plot_prep, warning=FALSE, message=FALSE}
+
+gbx2_eqtl <- peaks.esc.npc.rna %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Gbx2")
+gbx2_scan <- scan1( pheno = exprZ.npc_rna[,gbx2_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+
+gbx2_meds <- eqtl_npc_rna_meds %>% 
+  filter( target.symbol =="Gbx2", qtl.chr == gbx2_eqtl$peak_chr) %>% mutate(type = "npc") %>% 
+  # rbind( eqtl_esc_rna_meds %>% filter( target.symbol =="Gbx2", qtl.chr == gbx2_eqtl$peak_chr) %>% mutate(type = "esc")) %>% 
+  mutate( mediator_mid = (mediator.start+mediator.end)/2)
+
+
+```
+
+
+```{r gbx2_exp_plot, fig.width=4, fig.height=3, eval= FALSE}
+
+exprZ.npc_rna[,"ENSMUSG00000034486"] %>% 
+  as_tibble(rownames = "Gbx2") %>% 
+  ggplot( )+
+  aes(x = value)+
+  geom_histogram(binwidth = 0.1, col = qtl.colors[["npc_rna"]], fill = qtl.colors[["npc_rna"]], alpha = 0.5)+
+  theme_pubclean(base_size = 22)+
+  xlab("")+
+  ylab("")
+  
+
+```
+
+```{r gb2_plot, fig.width=12, fig.height=4, warning=FALSE, message=FALSE}
+
+# lod plot + annotate the gene location too
+gbx2_scan %>% 
+  as.data.frame( ) %>% 
+  rename( eqtl = "ENSMUSG00000034486") %>% 
+  mutate( marker = dimnames(gbx2_scan)[[1]]) %>% 
+  left_join(map_dat2) -> gbx2_scan_df
+gbx2_scan_df$cumsum_pos_bp <- gbx2_scan_df$pos_bp + chrom_lens_offset[gbx2_scan_df$chr]
+
+gbx2_scan_df %>% 
+  #filter( chr == gbx2_eqtl$peak_chr) %>% 
+  ggplot()+
+    aes( 
+      x= cumsum_pos_bp,
+      y = eqtl
+      )+
+  geom_line( size = 1, col = qtl.colors[["npc_rna"]],alpha = 0.3)+
+  theme_pubclean( base_size = 18)+
+  xlab("Chr")+
+  #xlab(paste0("Chr ",gbx2_eqtl$peak_chr," location (bp)"))+
+  ylab( "LOD score")+
+  geom_segment( x = gbx2_eqtl$gene_start+chrom_lens_offset[gbx2_eqtl$gene_chrom], 
+                xend = gbx2_eqtl$gene_end+chrom_lens_offset[gbx2_eqtl$gene_chrom], 
+                y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= gbx2_eqtl$midpoint+chrom_lens_offset[gbx2_eqtl$gene_chrom], y = -0.5, label ="Gbx2", size =6, fontface = 'italic')+
+  scale_x_discrete( name = "Chr",
+                    limits = chrom_lens_midpt, 
+                    labels = names(chrom_lens), 
+                    expand = expansion( mult = 0.05)) -> gbx2_lod_plot
+
+gbx2_meds_min <- gbx2_meds %>% 
+  slice_min( mediation.lod)
+gbx2_lod_plot+
+  geom_point( data = gbx2_meds, 
+              aes( x = mediator_mid+chrom_lens_offset[gbx2_eqtl$gene_chrom],
+                   y = mediation.lod,
+                   col = type),
+              size = 4,
+              alpha = 0.9)+
+    scale_color_manual( values = c( "npc"=qtl.colors[["npc_rna"]]),
+                      labels = c( "npc"="NPC transcript"), name = "Mediator")+
+  annotate( "label", 
+            y = gbx2_meds_min$mediation.lod+0.1, 
+            x =gbx2_meds_min$mediator_mid+chrom_lens_offset[gbx2_eqtl$gene_chrom]-1.2e08 ,
+            label = gbx2_meds_min$mediator.symbol, 
+            size = 6, 
+            col = qtl.colors[["npc_rna"]],
+            fontface = "italic")
+
+# overlay mediation lods as dots + add text for the best one
+
+```
+
+
+## eQTL with best mediator ESC rna
+
+
+```{r}
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_local %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 2) %>% 
+  filter( target.symbol == mediator.symbol) %>% 
+  slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol,mediator.symbol, target.chr, target.lod, mediation.lod,  type) %>% 
+  filter(type =="esc")%>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+```
+
+
+## Mediation example
+
+Making a LOD plot for *Fancg* with mediation results overlaid to examplify QTL mapping and mediaiton analysis. 
+
+```{r fancg_plot_prep, warning=FALSE, message=FALSE}
+
+fancg_eqtl <- peaks.esc.npc.rna %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Fancg", local.npc_rna == T)
+fancg_scan <- scan1( pheno = exprZ.npc_rna[,fancg_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+
+fancg_meds <- eqtl_esc_rna_meds %>% 
+  filter( target.symbol =="Fancg", qtl.chr == fancg_eqtl$peak_chr) %>% 
+  mutate( type = "esc") %>% 
+  rbind( eqtl_npc_rna_meds %>% filter(target.symbol =="Fancg", qtl.chr == fancg_eqtl$peak_chr) %>% mutate(type ="npc")) %>% 
+  mutate( mediator_mid = (mediator.start+mediator.end)/2)
+
+
+```
+
+```{r fancg_plot, fig.width=12, fig.height=5, warning=FALSE, message=FALSE}
+
+# lod plot + annotate the gene location too
+fancg_scan %>% 
+  as.data.frame( ) %>% 
+  rename( eqtl = "ENSMUSG00000028453") %>% 
+  mutate( marker = dimnames(fancg_scan)[[1]]) %>% 
+  left_join(map_dat2) -> fancg_scan_df
+fancg_scan_df$cumsum_pos_bp <- fancg_scan_df$pos_bp + chrom_lens_offset[fancg_scan_df$chr]
+
+fancg_scan_df %>% 
+  #filter( chr == fancg_eqtl$peak_chr) %>% 
+  ggplot()+
+    aes( 
+      x= cumsum_pos_bp,
+      y = eqtl
+      )+
+  geom_line( size = 1, col = qtl.colors[["npc_rna"]],alpha = 0.3)+
+  theme_pubclean( base_size = 18)+
+  xlab("Chr")+
+  #xlab(paste0("Chr ",fancg_eqtl$peak_chr," location (bp)"))+
+  ylab( "LOD score")+
+  geom_segment( x = fancg_eqtl$gene_start+chrom_lens_offset[fancg_eqtl$gene_chrom], 
+                xend = fancg_eqtl$gene_end+chrom_lens_offset[fancg_eqtl$gene_chrom], 
+                y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= fancg_eqtl$midpoint+chrom_lens_offset[fancg_eqtl$gene_chrom], y = -0.5, label ="Fancg", size =6, fontface = 'italic')+
+  scale_x_discrete( name = "Chr",
+                    limits = chrom_lens_midpt, 
+                    labels = names(chrom_lens), 
+                    expand = expansion( mult = 0.05)) -> fancg_lod_plot
+
+fancg_meds_min <- fancg_meds %>% 
+  slice_min( mediation.lod)
+fancg_lod_plot+
+  geom_point( data = fancg_meds, 
+              aes( x = mediator_mid+chrom_lens_offset[fancg_eqtl$peak_chr],
+                   y = mediation.lod,
+                   col = type),
+              size = 4,
+              alpha = 0.8)+
+  scale_color_manual( values = c("esc"=qtl.colors[["esc_rna"]], "npc"=qtl.colors[["npc_rna"]]),
+                      labels = c("esc"="ESC transcript", "npc"="NPC transcript"), name = "Mediator")+
+  annotate( "label", 
+            y = fancg_meds_min$mediation.lod+0.1, 
+            x =fancg_meds_min$mediator_mid+chrom_lens_offset[fancg_eqtl$peak_chr]-1.3e08 ,
+            label = fancg_meds_min$mediator.symbol, 
+            size = 6, 
+            fontface = "italic",
+            col = qtl.colors[["esc_rna"]])
+
+# overlay mediation lods as dots + add text for the best one
+
+```
+
+
+# Mediators of distant eQTL {.tabset .tabset-fade .tabset-pills}
+
+## eQTL with best mediator NPC rna
+
+```{r}
+
+peaks.esc.npc.rna %>% 
+  filter( lod.npc_rna > 7.5, match %in% c("shared","npc_rna"), local.npc_rna ==F) -> npc_eqtl_dist
+
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_dist %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 1) %>% 
+  #filter( target.symbol == mediator.symbol) %>% 
+  #slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, target.chr, mediator.symbol, mediator.chr, qtl.chr, target.lod,mediation.lod,  type) %>% 
+  filter(type =="npc")%>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+```
+
+## eQTL with best mediator ESC rna
+
+```{r}
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_dist %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 1) %>% 
+  #filter( target.symbol == mediator.symbol) %>% 
+  #slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, target.chr, mediator.symbol, mediator.chr, qtl.chr, target.lod,mediation.lod,  type) %>% 
+  filter(type =="esc") %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+  
+```
+
+For any of these NPC eQTL are we getting a best mediator that is not expressed in NPCs but is expressed in ESCs? Yes!
+
+```{r}
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_dist %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 1) %>% 
+  #filter( target.symbol == mediator.symbol) %>% 
+  #slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, target.chr, mediator.symbol, mediator.chr, qtl.chr, target.lod,mediation.lod,  type) %>% 
+  filter(type =="esc") %>% 
+  filter( !mediator.symbol %in% npc.genes$mgi_symbol) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+
+```
+
+
+## Mediation example 
+
+```{r Zfp51_plot_prep, warning=FALSE, message=FALSE}
+
+Zfp51_eqtl <- peaks.esc.npc.rna %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Zfp51", local.npc_rna == F, peak_chr ==7)
+Zfp51_scan <- scan1( pheno = exprZ.npc_rna[,Zfp51_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+
+Zfp51_meds <- eqtl_esc_rna_meds %>% 
+  filter( target.symbol =="Zfp51", qtl.chr == Zfp51_eqtl$peak_chr) %>% 
+  mutate( type = "esc") %>% 
+  rbind( eqtl_npc_rna_meds %>% filter(target.symbol =="Zfp51", qtl.chr == Zfp51_eqtl$peak_chr) %>% mutate(type ="npc")) %>% 
+  mutate( mediator_mid = (mediator.start+mediator.end)/2)
+
+
+```
+
+```{r Zfp51_plot, fig.width=12, fig.height=5, warning=FALSE, message=FALSE}
+
+# lod plot + annotate the gene location too
+Zfp51_scan %>% 
+  as.data.frame( ) %>% 
+  rename( eqtl = Zfp51_eqtl$ensembl_gene_id) %>% 
+  mutate( marker = dimnames(Zfp51_scan)[[1]]) %>% 
+  left_join(map_dat2) -> Zfp51_scan_df
+Zfp51_scan_df$cumsum_pos_bp <- Zfp51_scan_df$pos_bp + chrom_lens_offset[Zfp51_scan_df$chr]
+
+Zfp51_scan_df %>% 
+  #filter( chr == Zfp51_eqtl$peak_chr) %>% 
+  ggplot()+
+    aes( 
+      x= cumsum_pos_bp,
+      y = eqtl
+      )+
+  geom_line( size = 1, col = qtl.colors[["npc_rna"]],alpha = 0.3)+
+  theme_pubclean( base_size = 18)+
+  xlab("Chr")+
+  #xlab(paste0("Chr ",Zfp51_eqtl$peak_chr," location (bp)"))+
+  ylab( "LOD score")+
+  geom_segment( x = Zfp51_eqtl$gene_start+chrom_lens_offset[Zfp51_eqtl$gene_chrom], 
+                xend = Zfp51_eqtl$gene_end+chrom_lens_offset[Zfp51_eqtl$gene_chrom], 
+                y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= Zfp51_eqtl$midpoint+chrom_lens_offset[Zfp51_eqtl$gene_chrom], y = -0.5, label ="Zfp51", size =6, fontface = 'italic')+
+  scale_x_discrete( name = "Chr",
+                    limits = chrom_lens_midpt, 
+                    labels = names(chrom_lens), 
+                    expand = expansion( mult = 0.05)) -> Zfp51_lod_plot
+
+Zfp51_meds_min <- Zfp51_meds %>% 
+  slice_min( mediation.lod)
+Zfp51_lod_plot+
+  geom_point( data = Zfp51_meds, 
+              aes( x = mediator_mid+chrom_lens_offset[Zfp51_eqtl$peak_chr],
+                   y = mediation.lod,
+                   col = type),
+              size = 4,
+              alpha = 0.8)+
+  scale_color_manual( values = c("esc"=qtl.colors[["esc_rna"]], "npc"=qtl.colors[["npc_rna"]]),
+                      labels = c("esc"="ESC transcript", "npc"="NPC transcript"), name = "Mediator")
+
+# overlay mediation lods as dots + add text for the best one
+
+```
+
