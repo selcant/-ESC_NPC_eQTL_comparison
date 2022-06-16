@@ -8,3 +8,6 @@ _data
 _site
 figures
 _old
+*_cache
+*_files
+rsconnect
