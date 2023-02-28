@@ -226,6 +226,62 @@ tibble(var =  var_explained[1:10]* 100, PC = paste0("PC", seq(1:10))) %>%
 
 ```
 
+```{r pc1_2_plot, fig.height=5, fig.width=6}
+
+
+pca.npc$x%>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  left_join(covarTidy.npc_rna, by = c("rowname" = "sampleid")) %>%
+  mutate(sex = ifelse(sex == "F", "Female", "Male")) %>% 
+  ggplot()+
+  aes(
+    x = PC1, 
+    y = PC2, 
+    col = sex
+  )+
+  geom_point(size = 4, alpha = 0.7)+
+  theme_pubclean(base_size = 20)+
+  color_palette("npg")+
+  xlab(paste0("PC1 (",100*round(var_explained[1],2),"%)"))+
+  ylab(paste0("PC2 (",100*round(var_explained[2],2),"%)"))
+
+```
+
+Are PC1 drivers over-represented in any biological processes or pathways? Looking at the top 5% contributing genes of PC1.
+
+```{r pc1_ora}
+
+pc1_drivers <- pca.npc$rotation[,"PC1", drop = FALSE] %>% 
+  as_tibble( rownames = "ensembl_gene_id") %>% 
+  left_join( npc.genes %>%  
+               select(ensembl_gene_id, mgi_symbol)
+             ) %>% 
+  filter( abs(PC1) >= quantile(abs(PC1), 0.95))
+
+g.pc1 <- gost(
+  query = pc1_drivers$mgi_symbol,
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg = npc.genes$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+g.pc1$result <- g.pc1$result %>% filter(term_size < 660)
+
+```
+
+
+```{r ora_pc1_results}
+
+g.pc1$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
 ## Most and least variable genes in NPCs
 
 ```{r most_least_var}
@@ -274,6 +330,9 @@ g.high.var$result %>%
 
 ```
 
+<br>
+<br>
+
 ORA results with least variable (lowest .05% CV) genes in mNPCs (FDR <0.01):
 
 ```{r ora_least_var}
@@ -294,11 +353,10 @@ g.low.var$result %>%
 library(GSVA)
 library(GO.db)
 
-
 # reading in the GO + mgi downloaded from: http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt
 go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt") %>% 
   mutate( genes = str_split(genes, ",")) %>% 
-  unnest() # separete the symbols, note the overlap: length(intersect(unique(go_terms$genes), all.prots$mgi_symbol) ) = 6757
+  unnest() # separete the symbols, note the overlap: length(intersect(unique(go_terms$genes), npc.genes$mgi_symbol) ) = 11806
 
 
 slim_go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/map2MGIslim.txt") %>% 
@@ -325,17 +383,24 @@ goannot_wdef <- AnnotationDbi::select(GO.db, keys= unique(go_terms$GO_id), colum
 go_bp <- goannot_wdef %>% filter( ONTOLOGY == "BP") %>% 
   select(GOID) %>%  distinct()
 
-# expr - change protein id's to symbols for GSVA with GO
+# expr - change gene id's to symbols for GSVA with GO
 expr.npc_rna_upd <- expr.npc_rna[, npc.genes$ensembl_gene_id]
 colnames(expr.npc_rna_upd) <- npc.genes$mgi_symbol
 
-gsva_rna <- gsva(  expr = t(expr.npc_rna_upd),
-                    genesbygo,
-                    method ="gsva",
-                    kcdf = "none",
-                    min.sz = 5, 
-                    max.sz = 1000,
-                    mx.diff = TRUE)
+
+# I can't seem to run GSVA anymore! Keep erroring out. 
+# I was able to run it separately in a stand alone R session.
+# loading the results here instead of running.
+load(here("_data","Results_from_GSVA_2022-09-23.RData"))
+# gsva_rna <- gsva(  expr = t(expr.npc_rna_upd),
+#                    gset.idx.list = genesbygo,
+#                     method ="gsva",
+#                     kcdf = "none",
+#                     min.sz = 5, 
+#                     max.sz = 1000,
+#                     mx.diff = TRUE
+#                    )
+
 
 # following up on rna results
 gsva_rna %>% 
@@ -370,12 +435,13 @@ gsva_rna_tukey %>%
 
 ```
 
-Below are the list of GO Biological processes that show significant differences by sex or genotype at the *Lifr* locus. 
+Below are the list of GO Biological processes that show significant differences by sex or genotype at the *Lifr* locus, or their interaction (adjusted p-value < 0.01). 
 
 ```{r gsva_results_table}
 
 signif_results_tukey_rna %>%
   select(Effect= term, Category, TERM,group1, group2, estimate,p.adj) %>% 
+  filter( p.adj < 0.01) %>% 
   distinct() %>% 
  mutate( "Adjusted p-value" = formatC(p.adj, digits=2, format ="e"),
           estimate= round(estimate,2)) %>% 
