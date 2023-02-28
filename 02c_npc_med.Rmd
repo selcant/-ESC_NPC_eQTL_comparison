@@ -26,8 +26,8 @@ knitr::opts_knit$set(progress=FALSE)
 
 ```{r}
 
-peaks.esc.npc.rna %>% 
-  filter( lod.npc_rna > 7.5, lod.esc_rna >7.5, match %in% c("npc_rna","shared"), local.npc_rna ==T) -> npc_eqtl_local
+peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna > 7.5, match %in% c("npc_rna","shared"), local.npc_rna ==T) -> npc_eqtl_local
 
 eqtl_npc_rna_meds %>% 
   mutate( type = "npc") %>% 
@@ -55,7 +55,7 @@ Making a LOD plot for *Gbx2* with mediation results overlaid to examplify QTL ma
 
 ```{r gbx2_plot_prep, warning=FALSE, message=FALSE}
 
-gbx2_eqtl <- peaks.esc.npc.rna %>% 
+gbx2_eqtl <- peaks.npc_rna.wesc.overlap %>% 
   filter( lod.npc_rna >7.5, mgi_symbol =="Gbx2")
 gbx2_scan <- scan1( pheno = exprZ.npc_rna[,gbx2_eqtl$ensembl_gene_id,drop=FALSE], 
                     genoprobs = probs.npc_rna, 
@@ -107,10 +107,10 @@ gbx2_scan_df %>%
   xlab("Chr")+
   #xlab(paste0("Chr ",gbx2_eqtl$peak_chr," location (bp)"))+
   ylab( "LOD score")+
-  geom_segment( x = gbx2_eqtl$gene_start+chrom_lens_offset[gbx2_eqtl$gene_chrom], 
-                xend = gbx2_eqtl$gene_end+chrom_lens_offset[gbx2_eqtl$gene_chrom], 
+  geom_segment( x = gbx2_eqtl$gene_start+chrom_lens_offset[gbx2_eqtl$gene_chr], 
+                xend = gbx2_eqtl$gene_end+chrom_lens_offset[gbx2_eqtl$gene_chr], 
                 y = 0, yend = 1, col = "black", size = 2) +
-  annotate( "text", x= gbx2_eqtl$midpoint+chrom_lens_offset[gbx2_eqtl$gene_chrom], y = -0.5, label ="Gbx2", size =6, fontface = 'italic')+
+  annotate( "text", x= gbx2_eqtl$midpoint+chrom_lens_offset[gbx2_eqtl$gene_chr], y = -0.5, label ="Gbx2", size =6, fontface = 'italic')+
   scale_x_discrete( name = "Chr",
                     limits = chrom_lens_midpt, 
                     labels = names(chrom_lens), 
@@ -120,7 +120,7 @@ gbx2_meds_min <- gbx2_meds %>%
   slice_min( mediation.lod)
 gbx2_lod_plot+
   geom_point( data = gbx2_meds, 
-              aes( x = mediator_mid+chrom_lens_offset[gbx2_eqtl$gene_chrom],
+              aes( x = mediator_mid+chrom_lens_offset[gbx2_eqtl$gene_chr],
                    y = mediation.lod,
                    col = type),
               size = 4,
@@ -129,7 +129,7 @@ gbx2_lod_plot+
                       labels = c( "npc"="NPC transcript"), name = "Mediator")+
   annotate( "label", 
             y = gbx2_meds_min$mediation.lod+0.1, 
-            x =gbx2_meds_min$mediator_mid+chrom_lens_offset[gbx2_eqtl$gene_chrom]-1.2e08 ,
+            x =gbx2_meds_min$mediator_mid+chrom_lens_offset[gbx2_eqtl$gene_chr]-1.2e08 ,
             label = gbx2_meds_min$mediator.symbol, 
             size = 6, 
             col = qtl.colors[["npc_rna"]],
@@ -171,7 +171,7 @@ Making a LOD plot for *Fancg* with mediation results overlaid to examplify QTL m
 
 ```{r fancg_plot_prep, warning=FALSE, message=FALSE}
 
-fancg_eqtl <- peaks.esc.npc.rna %>% 
+fancg_eqtl <- peaks.npc_rna.wesc.overlap %>% 
   filter( lod.npc_rna >7.5, mgi_symbol =="Fancg", local.npc_rna == T)
 fancg_scan <- scan1( pheno = exprZ.npc_rna[,fancg_eqtl$ensembl_gene_id,drop=FALSE], 
                     genoprobs = probs.npc_rna, 
@@ -209,10 +209,10 @@ fancg_scan_df %>%
   xlab("Chr")+
   #xlab(paste0("Chr ",fancg_eqtl$peak_chr," location (bp)"))+
   ylab( "LOD score")+
-  geom_segment( x = fancg_eqtl$gene_start+chrom_lens_offset[fancg_eqtl$gene_chrom], 
-                xend = fancg_eqtl$gene_end+chrom_lens_offset[fancg_eqtl$gene_chrom], 
+  geom_segment( x = fancg_eqtl$gene_start+chrom_lens_offset[fancg_eqtl$gene_chr], 
+                xend = fancg_eqtl$gene_end+chrom_lens_offset[fancg_eqtl$gene_chr], 
                 y = 0, yend = 1, col = "black", size = 2) +
-  annotate( "text", x= fancg_eqtl$midpoint+chrom_lens_offset[fancg_eqtl$gene_chrom], y = -0.5, label ="Fancg", size =6, fontface = 'italic')+
+  annotate( "text", x= fancg_eqtl$midpoint+chrom_lens_offset[fancg_eqtl$gene_chr], y = -0.5, label ="Fancg", size =6, fontface = 'italic')+
   scale_x_discrete( name = "Chr",
                     limits = chrom_lens_midpt, 
                     labels = names(chrom_lens), 
@@ -248,7 +248,7 @@ fancg_lod_plot+
 
 ```{r}
 
-peaks.esc.npc.rna %>% 
+peaks.npc_rna.wesc.overlap %>% 
   filter( lod.npc_rna > 7.5, match %in% c("shared","npc_rna"), local.npc_rna ==F) -> npc_eqtl_dist
 
 
@@ -325,7 +325,7 @@ eqtl_npc_rna_meds %>%
 
 ```{r Zfp51_plot_prep, warning=FALSE, message=FALSE}
 
-Zfp51_eqtl <- peaks.esc.npc.rna %>% 
+Zfp51_eqtl <- peaks.npc_rna.wesc.overlap %>% 
   filter( lod.npc_rna >7.5, mgi_symbol =="Zfp51", local.npc_rna == F, peak_chr ==7)
 Zfp51_scan <- scan1( pheno = exprZ.npc_rna[,Zfp51_eqtl$ensembl_gene_id,drop=FALSE], 
                     genoprobs = probs.npc_rna, 
@@ -363,10 +363,10 @@ Zfp51_scan_df %>%
   xlab("Chr")+
   #xlab(paste0("Chr ",Zfp51_eqtl$peak_chr," location (bp)"))+
   ylab( "LOD score")+
-  geom_segment( x = Zfp51_eqtl$gene_start+chrom_lens_offset[Zfp51_eqtl$gene_chrom], 
-                xend = Zfp51_eqtl$gene_end+chrom_lens_offset[Zfp51_eqtl$gene_chrom], 
+  geom_segment( x = Zfp51_eqtl$gene_start+chrom_lens_offset[Zfp51_eqtl$gene_chr], 
+                xend = Zfp51_eqtl$gene_end+chrom_lens_offset[Zfp51_eqtl$gene_chr], 
                 y = 0, yend = 1, col = "black", size = 2) +
-  annotate( "text", x= Zfp51_eqtl$midpoint+chrom_lens_offset[Zfp51_eqtl$gene_chrom], y = -0.5, label ="Zfp51", size =6, fontface = 'italic')+
+  annotate( "text", x= Zfp51_eqtl$midpoint+chrom_lens_offset[Zfp51_eqtl$gene_chr], y = -0.5, label ="Zfp51", size =6, fontface = 'italic')+
   scale_x_discrete( name = "Chr",
                     limits = chrom_lens_midpt, 
                     labels = names(chrom_lens), 
