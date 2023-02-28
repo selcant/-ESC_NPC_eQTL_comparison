@@ -350,6 +350,7 @@ gostplot(npc_specific_ora)
 
 npc_specific_ora$result %>% 
   select( term_name, source,FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
   mutate_if( is.numeric, formatC, digits =2) %>% 
   create_dt()
 
@@ -391,8 +392,220 @@ gostplot(esc_specific_ora, capped = FALSE)
 
 esc_specific_ora$result %>% 
   select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
   mutate_if( is.numeric, formatC, digits =2) %>% 
   create_dt()
+
+```
+
+
+## Gene Set Variation Analysis of combined ESC-NPC Data set
+
+```{r esc_npc_rna_gsva, cache=TRUE, warning=FALSE, message=FALSE}
+
+library(GSVA)
+library(GO.db)
+
+
+# reading in the GO + mgi downloaded from: http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt
+go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt") %>% 
+  mutate( genes = str_split(genes, ",")) %>% 
+  unnest() # separete the symbols, note the overlap: length(intersect(unique(go_terms$genes), all.prots$mgi_symbol) ) = 6757
+
+
+slim_go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/map2MGIslim.txt") %>% 
+  select(-term) %>% 
+  mutate( ONT = case_when( aspect == "P" ~  "BP",
+                     aspect == "F" ~ "MF",
+                     aspect == "C" ~ "CC"
+                     )
+          ) %>% 
+  select(-aspect)
+
+genesbygo <- split(go_terms$genes, go_terms$GO_id)
+
+go_terms_annot <- go_terms %>%  
+  select(GO_id) %>% 
+  distinct() %>% 
+  left_join( slim_go_terms %>%  select( GO_id, ONT) %>% distinct())
+
+goannot_wdef <- AnnotationDbi::select(GO.db, keys= unique(go_terms$GO_id), columns=c("GOID","DEFINITION","ONTOLOGY","TERM")) %>%
+  left_join( slim_go_terms, by=c("GOID"="GO_id")) %>% 
+  mutate( ONTOLOGY = ONT) %>% 
+  select(-ONT)
+
+go_bp <- goannot_wdef %>% filter( ONTOLOGY == "BP") %>% 
+  select(GOID) %>%  distinct()
+
+# expr - change protein id's to symbols for GSVA with GO
+shared.genes2 <- all.genes %>% 
+  filter(ensembl_gene_id %in% shared.genes)
+shared.expr.npc_rna_upd <- shared.expr.npc_rna[, shared.genes2$ensembl_gene_id]
+colnames(shared.expr.npc_rna_upd) <- shared.genes2$mgi_symbol
+rownames(shared.expr.npc_rna_upd) <- paste0( rownames(shared.expr.npc_rna_upd),"_npc")
+shared.expr.esc_rna_upd <- shared.expr.esc_rna[,shared.genes2$ensembl_gene_id]
+colnames(shared.expr.esc_rna_upd) <- shared.genes2$mgi_symbol
+rownames(shared.expr.esc_rna_upd) <- paste0( rownames(shared.expr.esc_rna_upd),"_esc")
+
+shared.expr.merged <- rbind(shared.expr.npc_rna_upd, 
+                            shared.expr.esc_rna_upd)
+
+# I can't seem to run GSVA anymore! Keep erroring out. 
+# I was able to run it separately in a stand alone R session.
+# loading the results here instead of running.
+load(here("_data","Results_from_GSVA_2022-09-23.RData"))
+# gsva_rna_esc_npc <- gsva(  expr = t(shared.expr.merged),
+#                     genesbygo,
+#                     method ="gsva",
+#                     kcdf = "none",
+#                     min.sz = 5, 
+#                     max.sz = 1000,
+#                     mx.diff = TRUE)
+
+# following up on rna results
+gsva_rna_esc_npc %>% 
+  as_tibble(rownames = "Category") %>% 
+  #filter( Category %in% go_bp$GOID) %>% #filtering for BP
+  pivot_longer( cols = rownames(shared.expr.merged),
+                values_to = "Enrichment_Score",
+                names_to = "sample") %>% 
+  separate( sample, into = c("temp1","temp2", "type"), sep = "_") %>% 
+  unite( sampleid, c(temp1, temp2), sep = "_") %>% 
+  # add sexes + lifr genotypes
+  left_join( covarTidy.npc_rna) -> gsva_rna_esc_npc_results
+
+gsva_rna_esc_npc_results %>% 
+  group_by( Category) %>% 
+  rstatix::anova_test( Enrichment_Score ~ type+sex+type*sex) %>% 
+  rstatix::adjust_pvalue( method = "BH") %>%
+  rstatix::add_significance("p.adj") %>% 
+  ungroup() -> gsva_rna_esc_npc_aov
+
+gsva_rna_esc_npc_results %>% 
+  group_by(Category) %>% 
+  rstatix::tukey_hsd( Enrichment_Score ~ type+sex+type*sex) %>% 
+  ungroup() %>% 
+  as_tibble() %>% 
+  left_join( goannot_wdef, by = c("Category" = "GOID")) -> gsva_rna_esc_npc_tukey
+
+gsva_rna_esc_npc_aov %>% 
+  as_tibble() %>% 
+  filter( p.adj.signif != "ns" ) -> signif_eff_terms_rna_esc_npc
+
+gsva_rna_esc_npc_tukey %>% 
+  inner_join( ., select( signif_eff_terms_rna_esc_npc, Category, term = Effect)) -> signif_results_tukey_rna_esc_npc
+
+```
+
+Below are the list of GO Biological processes that show significant differences by cell type or sex(adjusted p-value <0.01).
+
+```{r gsva_results_table}
+
+signif_results_tukey_rna_esc_npc %>%
+  filter( Category %in% go_bp$GOID) %>%
+  filter( term != "type:sex") %>% 
+  select(Effect= term, Category, TERM, group1, group2, estimate,p.adj) %>% 
+  filter( p.adj < 0.01) %>% 
+  distinct() %>% 
+ mutate( "Adjusted p-value" = formatC(p.adj, digits=2, format ="e"),
+          estimate= round(estimate,2)) %>% 
+  select(-p.adj) %>% 
+  arrange(estimate) %>% 
+  create_dt()
+
+```
+
+Examples:
+
+```{r gsva_examples, fig.width=8, fig.height=4}
+
+# ribosome biogenesis GO:0042254
+# translation GO:0006412
+# GO:0010564	regulation of cell cycle process
+# GO:0006094	gluconeogenesis
+# GO:0001825	blastocyst formation
+
+# GO:0030182	neuron differentiation
+# GO:0048699	generation of neurons
+# GO:0048666	neuron development
+# GO:0021954	central nervous system neuron development
+# GO:0045995	regulation of embryonic development
+# GO:0097150	neuronal stem cell population maintenance
+# GO:0007417	central nervous system development
+
+gsva_rna_esc_npc_results %>%
+  filter( Category ==  "GO:0007417") %>%
+  left_join( select(goannot_wdef, Category = GOID, TERM)) %>% 
+  ggplot()+
+  aes( x = type,
+       y = Enrichment_Score,
+       col = type)+
+  geom_boxplot(width =0.2, size = 1.1)+
+  #geom_jitter()+
+  #geom_beeswarm(aes(col = sex))+
+  theme_pubclean(base_size = 16)+
+  stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0007417", term == "type"),
+                      label = "{p.adj.signif}",
+                      y.position = 0.85)+
+  color_palette("jco")+
+  ylab("Enrichment Score")+
+  ggtitle("Central nervous system development")+
+  xlab("")+
+  ylim(-1,1)+
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 16),
+        axis.title = element_text(size =16),
+        title = element_text(size =10)) -> plot_nerv
+
+gsva_rna_esc_npc_results %>%
+  filter( Category ==  "GO:0006094") %>%
+  left_join( select(goannot_wdef, Category = GOID, TERM)) %>% 
+  ggplot()+
+  aes( x = type,
+       y = Enrichment_Score,
+       col = type)+
+  geom_boxplot(width =0.2, size = 1.1)+
+  #geom_jitter()+
+  #geom_beeswarm(aes(col = sex))+
+  theme_pubclean(base_size = 16)+
+  stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0006094", term == "type"),
+                      label = "{p.adj.signif}",
+                      y.position = 0.85)+
+  color_palette("jco")+
+  ylab("Enrichment Score")+
+  ggtitle("Gluconeogenesis")+
+  xlab("")+
+  ylim(-1,1)+
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 16),
+        axis.title = element_text(size =16),
+        title = element_text(size =10)) -> plot_glucogenesis
+
+gsva_rna_esc_npc_results %>%
+  filter( Category ==  "GO:0006412") %>%
+  left_join( select(goannot_wdef, Category = GOID, TERM)) %>% 
+  ggplot()+
+  aes( x = type,
+       y = Enrichment_Score,
+       col = type)+
+  geom_boxplot(width =0.2, size = 1.1)+
+  #geom_jitter()+
+  #geom_beeswarm(aes(col = sex))+
+  theme_pubclean(base_size = 16)+
+  stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0006412", term == "type"),
+                      label = "{p.adj.signif}",
+                      y.position = 0.85)+
+  color_palette("jco")+
+  ylab("Enrichment Score")+
+  ggtitle("Translation")+
+  xlab("")+
+  ylim(-1,1)+
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 16),
+        axis.title = element_text(size =16),
+        title = element_text(size =10)) -> plot_translation
+
+ggarrange( plot_nerv, plot_translation, common.legend =  TRUE, legend = "none", nrow = 1)
 
 ```
 
