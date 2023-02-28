@@ -11,3 +11,5 @@ _old
 *_cache
 *_files
 rsconnect
+*.html
+site_libs/
