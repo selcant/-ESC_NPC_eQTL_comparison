@@ -27,6 +27,7 @@ knitr::opts_knit$set(progress=FALSE)
 # qtl mapping + mediation
 library(intermediate) # "simecek/intermediate"
 library(qtl2) 
+library(bmediatR)
 
 # # plotting
 library(ggpubr)
@@ -47,6 +48,8 @@ library(gprofiler2)
 library(sva)
 library(WebGestaltR)
 
+#data handling and display
+library(DT)
 library(readxl)
 library(tidyverse)
 select <- dplyr::select # I am adding this explicitly
@@ -72,6 +75,60 @@ create_dt <- function(x){
                                scrollX= TRUE
                                ))
   
+}
+
+# Running mediation locally for transbands
+do_global_mediation <- function(gene.name,p.chr, peak.info, probs, expr.target, expr.mediator, covar, med.type, genes){
+  
+  gene <- filter(peak.info, mgi_symbol==gene.name & peak_chr==p.chr)[1,]
+  if(dim(gene)[1] >1){ print("check the peaks!")}
+  
+  if(med.type=="n-n"){ # npc mediation to npc target
+    meds <- genes 
+    meds <- meds[meds$ensembl_gene_id %in% colnames(expr.mediator),]    
+    mediator <- expr.mediator[ ,meds$ensembl_gene_id, drop=FALSE ]
+    target   <- expr.target[ ,gene$ensembl_gene_id,drop=FALSE ]
+    marker   <- map_dat2 %>% filter(pos_cM == gene$peak_cM.npc_rna)
+   }
+  
+  if(med.type=="e-n"){ # esc mediation to npc target
+    meds <- genes 
+    meds <- meds[meds$ensembl_gene_id %in% colnames(expr.mediator),]    
+    mediator <- expr.mediator[ ,meds$ensembl_gene_id, drop=FALSE ]
+    target   <- expr.target[ ,gene$ensembl_gene_id,drop=FALSE ]
+    marker   <- map_dat2 %>% filter(pos_cM == gene$peak_cM.npc_rna)
+  }
+  if(med.type=="e-e"){ # esc mediation to esc target
+    meds <- genes
+    meds <- meds[meds$ensembl_gene_id %in% colnames(expr.mediator),]
+    mediator <- expr.mediator[ ,meds$ensembl_gene_id, drop=FALSE ]
+    target   <- expr.target[ ,gene$ensembl_gene_id,drop=FALSE ]
+    marker   <- map_dat2 %>% filter(pos_cM == gene$peak_cM.esc_rna)
+  }
+  if(med.type=="n-e"){ # npc mediation to esc target
+    meds <- genes
+    meds <- meds[meds$ensembl_gene_id %in% colnames(expr.mediator),]
+    mediator <- expr.mediator[ ,meds$ensembl_gene_id, drop=FALSE ]
+    target   <- expr.target[ ,gene$ensembl_gene_id,drop=FALSE ]
+    marker   <- map_dat2 %>% filter(pos_cM == gene$peak_cM.esc_rna)
+  }
+  
+  
+  annot    <- meds %>% mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2)
+  geno     <- pull_genoprobpos(probs,marker$marker)
+
+  med.scan <- mediation.scan(target= target,
+                            mediator = mediator,
+                            annotation = annot,
+                            covar =  covar,
+                            qtl.geno = geno, verbose=FALSE) 
+  med.scan <- med.scan %>% 
+    select(-chr) %>% 
+    mutate(target   = gene.name,
+           peak_chr = p.chr) %>% 
+    left_join(.,all.genes) %>% 
+    rename("mediator"="mgi_symbol")
+  return(med.scan)
 }
 
 ```
@@ -121,6 +178,16 @@ expr.npc_rna[expr.npc_rna < 0] <- 0
 expr.npc_rna <- t(expr.npc_rna)
 rm(npc.expr, npc.exprZ, npc.kinship_loco, npc.probs, npc.expr.ComBat, npc.raw.expr, exprComBat.npc_rna, npc.covar, npc.covarTidy)
 
+# Get v84 gene annotations
+# all.genes_v84 <- ensimplR::batchGenes( ids = union(colnames(expr.esc_rna), colnames(expr.npc_rna)), species = 'Mm', release = 84) 
+# # Let's save these so I don't have to depend on ensimplR every time
+# write_tsv(all.genes_v84, file = here("_data","ENSMUSGid_to_symbol_v84.txt"))
+all.genes_v84 <- read_tsv( here("_data","ENSMUSGid_to_symbol_v84.txt"))
+all.genes_v84 <- all.genes_v84 %>% 
+  mutate( midpoint = (gene_start+gene_end)/2) %>% 
+  # add gene_biotype
+  left_join( all.genes_v91 %>%  select(ensembl_gene_id, gene_biotype))
+
 # ESC eQTL map + effects
 load(here("_data/ESC_eQTL_effects.RData"))
 peaks.esc_rna <- peaks
@@ -138,7 +205,7 @@ colnames(peaks.esc_rna.blup) <- c(
 
 # adding annotations to eQTL peaks with effects
 peaks.esc_rna.wEffs <- peaks.esc_rna.blup %>% 
-  left_join( all.genes_v91) %>% 
+  left_join( all.genes_v84) %>% 
   mutate(midpoint = (gene_start + gene_end) / 2) %>% 
   mutate( same_chrom =  (peak_chr == gene_chr),
           diff = abs(midpoint - interp_bp_peak.esc_rna)) %>% 
@@ -165,7 +232,7 @@ colnames(peaks.npc_rna.blup) <- c(
 
 # adding annotations to eQTL peaks with effects
 peaks.npc_rna.wEffs <- peaks.npc_rna.blup %>% 
-  left_join( all.genes_v91) %>% 
+  left_join( all.genes_v84) %>% 
   mutate(midpoint = (gene_start + gene_end) / 2) %>% 
   mutate( same_chrom =  (peak_chr == gene_chr),
           diff = abs(midpoint - interp_bp_peak.npc_rna)) %>% 
@@ -176,9 +243,9 @@ peaks.npc_rna.wEffs <- peaks.npc_rna.blup %>%
 
 
 # get all genes that contain the union of both data sets + esc/npc gene lists.
-all.genes <- filter(all.genes_v91, ensembl_gene_id %in% c(colnames(exprZ.esc_rna), colnames(exprZ.npc_rna)) )
-esc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.esc_rna)) # note that we are missing annotations for 61 ids, ensembl say they are deprecated.
-npc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.npc_rna)) # note that we are missing annotations for 36 ids, ensembl says they are deprecated.
+all.genes <- filter(all.genes_v84, ensembl_gene_id %in% c(colnames(exprZ.esc_rna), colnames(exprZ.npc_rna)) )
+esc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.esc_rna)) # note that we are missing annotations for 19 ids, ensembl say they are deprecated.
+npc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.npc_rna)) 
 
 
 ## shared data
@@ -199,7 +266,7 @@ shared.probs.npc_rna <- probs.npc_rna[ind=shared.samples]
 
 ## merged peaks
 # ESC/NPC eQTL overlap
-load(here("_data","peaks_comparison_10Mb_ESC_NPC.RData")) # peaks.esc.npc.rna
+load(here("_data","peaks_comparison_10Mb_ESC_NPC_v2.RData")) # peaks.esc.npc.rna
 
 # there are some significant NPC eQTL that should be shared but is not. See below, might be worth fixing those.
 # peaks.esc.npc.rna %>% 
@@ -309,7 +376,16 @@ In this first tab, I focus on the NPC transcriptome investigating the variation 
 In the second tab, I am presenting the genetic mapping and mediation results with DO mNPC transcripts. First, I calculate the heritability of each transcript in DO mNPCs and present the DO mNPC eQTL map. Next, I integrate the DO mNPC eQTL map with the mESC eQTL map and compare the allel effects of overlapping eQTL. Mediation analysis results are summarized in two notebooks where the first one is summarizing the full mediation results focusing on local and distant eQTL with best mediators being ESC or NPC transcripts. Second notebook describes the DO mNPC eQTL hotspots, their characterization and mediation. 
 
 
+```{r save_data_for_courtney, echo = F, eval = F}
 
+save(
+  expr.npc_rna,
+  covarTidy.npc_rna,
+  npc.genes,
+  file = here("_data","DO_mNPC_expr_data_02152023.RData")
+)
+
+```
 
 
 
