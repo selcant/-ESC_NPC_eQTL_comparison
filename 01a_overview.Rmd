@@ -25,9 +25,9 @@ knitr::opts_knit$set(progress=FALSE)
 
 
 # qtl mapping + mediation
-library(intermediate) # "simecek/intermediate"
+library(intermediate) # https://github.com/simecek/intermediate
 library(qtl2) 
-library(bmediatR)
+library(bmediatR) # https://github.com/wesleycrouse/bmediatR
 
 # # plotting
 library(ggpubr)
@@ -37,16 +37,21 @@ library(pheatmap)
 library(cowplot)
 library(GGally)
 library(corrplot)
+library(eulerr) 
 
 # annotations + general genomic things
 #library(biomaRt)
 library(GenomicRanges)
 
-# data processing
+# analysis
 library(Hmisc) # rcorr
 library(gprofiler2)
 library(sva)
 library(WebGestaltR)
+library(WGCNA)
+library(GSVA)
+library(GO.db)
+library(rstatix)
 
 #data handling and display
 library(DT)

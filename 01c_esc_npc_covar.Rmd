@@ -25,7 +25,7 @@ knitr::opts_knit$set(progress=FALSE)
 
 ```{r,fig.width=8, fig.height=4, warning=FALSE, message=FALSE}
 
-library(eulerr) 
+
 sample.overlap <- euler(c( "ESC" = nrow(covarTidy.esc_rna)-length(shared.samples), 
                            "NPC"=nrow(covarTidy.npc_rna)-length(shared.samples), 
                            "ESC&NPC"=length(shared.samples)) ,shape="ellipse")
@@ -402,9 +402,6 @@ esc_specific_ora$result %>%
 ## Gene Set Variation Analysis of combined ESC-NPC Data set
 
 ```{r esc_npc_rna_gsva, cache=TRUE, warning=FALSE, message=FALSE}
-
-library(GSVA)
-library(GO.db)
 
 
 # reading in the GO + mgi downloaded from: http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt

@@ -350,9 +350,6 @@ g.low.var$result %>%
 
 ```{r npc_rna_gsva, cache=TRUE, warning=FALSE, message=FALSE}
 
-library(GSVA)
-library(GO.db)
-
 # reading in the GO + mgi downloaded from: http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt
 go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt") %>% 
   mutate( genes = str_split(genes, ",")) %>% 
