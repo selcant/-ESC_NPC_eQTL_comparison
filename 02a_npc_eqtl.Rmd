@@ -1012,30 +1012,22 @@ Lats1_eqtl <- peaks.npc_rna.wesc.overlap %>%
   filter( lod.npc_rna >7.5, mgi_symbol =="Lats1", local.npc_rna ==F)
 
 # LOD plot
-Lats1_esc_scan <- scan1( pheno = exprZ.esc_rna[,Lats1_eqtl$ensembl_gene_id,drop=FALSE], 
-                           genoprobs = probs.esc_rna, 
-                           kinship = kinship_loco.esc_rna,
-                           addcovar = covar.esc_rna)
 
 Lats1_npc_scan <- scan1( pheno = exprZ.npc_rna[,Lats1_eqtl$ensembl_gene_id,drop=FALSE], 
                            genoprobs = probs.npc_rna, 
                            kinship = kinship_loco.npc_rna,
                            addcovar = covar.npc_rna)
 
-
-Lats1_esc_scan %>% 
+Lats1_npc_scan %>% 
   as.data.frame( ) %>% 
-  rename( esc_rna = Lats1_eqtl$ensembl_gene_id) %>% 
-  mutate( marker = dimnames(Lats1_esc_scan)[[1]]) %>% 
-  left_join(map_dat2) %>% 
-  cbind(
-    Lats1_npc_scan %>% as.data.frame() %>% rename( npc_rna = Lats1_eqtl$ensembl_gene_id)
-  ) -> Lats1_qtl_scans
+  mutate( marker = dimnames(Lats1_npc_scan)[[1]]) %>% 
+  rename( npc_rna = Lats1_eqtl$ensembl_gene_id) %>% 
+  left_join(map_dat2)  -> Lats1_qtl_scans
 
 Lats1_qtl_scans %>% 
   filter( chr == Lats1_eqtl$peak_chr) %>% 
-  pivot_longer( cols = c("npc_rna","esc_rna"), names_to = "qtl_type", values_to = "lod") %>% 
-  mutate( qtl_type = factor( qtl_type, levels = c("npc_rna","esc_rna"))) %>% 
+  pivot_longer( cols = c("npc_rna"), names_to = "qtl_type", values_to = "lod") %>% 
+  mutate( qtl_type = factor( qtl_type, levels = c("npc_rna"))) %>% 
   ggplot()+
   aes( 
     x= pos_bp/1e06,
@@ -1044,8 +1036,8 @@ Lats1_qtl_scans %>%
   )+
   geom_line( size = 1.5)+
   theme_pubclean( base_size = 18)+
-  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
-                      labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]]), 
+                      labels = c("npc_rna"="NPC"))+
   xlab(paste0("Chr ",Lats1_eqtl$peak_chr," location (Mbp)"))+
   ylab( "LOD score")+
   labs(col = "QTL type")+
@@ -1055,18 +1047,13 @@ Lats1_qtl_scans %>%
 
 
 # Effects plot
-Lats1_esc_eff <- peaks.esc_rna.wEffs %>% 
-  inner_join( Lats1_eqtl %>% select(ensembl_gene_id, peak_chr, lod.esc_rna))
-
 Lats1_npc_eff <- peaks.npc_rna.wEffs %>% 
   inner_join( Lats1_eqtl %>% select(ensembl_gene_id, peak_chr, lod.npc_rna))
-Lats1_effs <- Lats1_esc_eff %>% 
-  select( mgi_symbol, paste0(LETTERS[1:8], ".esc_rna")) %>% 
-  cbind( Lats1_npc_eff %>% select(paste0(LETTERS[1:8], ".npc_rna")) ) 
+Lats1_effs <- Lats1_npc_eff %>% 
+  select( mgi_symbol, paste0(LETTERS[1:8], ".npc_rna"))
 
 Lats1_effs %>% 
-  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna"),
-                          paste0(LETTERS[1:8], ".esc_rna")), 
+  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna")), 
                 names_to = c("effect"),
                 values_to = "value") %>% 
   separate(effect, sep ="[.]", into = c("effect","type")) %>% 
@@ -1078,7 +1065,7 @@ Lats1_effs %>%
                               effect == "F" ~ "CAST",
                               effect == "G" ~ "PWK",
                               effect == "H" ~ "WSB")) %>% 
-  mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>% 
+  mutate( type = factor(type, levels =c("npc_rna"))) %>% 
   ggplot()+
   aes( x = effect,
        y = value, 
@@ -1087,8 +1074,8 @@ Lats1_effs %>%
   geom_point(size = 4, show.legend = FALSE)+
   geom_line(show.legend = T, size = 1.2)+
   theme_pubclean(base_size = 18)+
-  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
-                      labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]]), 
+                      labels = c("npc_rna"="NPC"))+
   ylab("Haplotype effects")+
   xlab("")+
   #ylim(-2,1.1)+
