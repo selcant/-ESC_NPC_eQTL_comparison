@@ -46,6 +46,9 @@ library(GenomicRanges)
 # analysis
 library(Hmisc) # rcorr
 library(gprofiler2)
+# set gprofiler version
+set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e107_eg54_p17/")
+
 library(sva)
 library(WebGestaltR)
 library(WGCNA)
@@ -389,6 +392,32 @@ save(
   npc.genes,
   file = here("_data","DO_mNPC_expr_data_02152023.RData")
 )
+
+
+save(
+  expr.npc_rna,
+  exprZ.npc_rna,
+  probs.npc_rna,
+  covar.npc_rna,
+  covarTidy.npc_rna,
+  kinship_loco.npc_rna,
+  npc.genes,
+  peaks.npc_rna.wEffs,
+  expr.esc_rna,
+  exprZ.esc_rna,
+  esc.genes,
+  file = here("_data",paste0("DO_mNPC_data_for_Courtney_",Sys.Date(),".RData"))
+  
+)
+
+# save(
+#   expr.esc_rna,
+#   exprZ.esc_rna,
+#   esc.genes,
+#   shared.samples, 
+#   shared.probs.npc_rna,
+#   file = here("_data",paste0("DO_mESC_mediation_data_for_Courtney_",Sys.Date(),".RData"))
+# )
 
 ```
 
