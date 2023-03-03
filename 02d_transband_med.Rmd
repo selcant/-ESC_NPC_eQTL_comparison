@@ -199,6 +199,17 @@ p+
 
 ```
 
+```{r}
+
+chr1.npc.eQTL1 %>% 
+  mutate(match =ifelse(match=="npc_rna","NPC eQTL",match), match=ifelse(match=="esc_rna","ESC eQTL",match)) %>% 
+  select( ensembl_gene_id, mgi_symbol, peak_chr, gene_chr, lod.npc_rna, lod.esc_rna, interp_bp_peak.npc_rna, interp_bp_peak.esc_rna) %>% 
+  mutate_if( is.numeric, round, 2) %>% 
+  create_dt()
+
+```
+
+
 ### ORA with NPC eQTL in the region
 
 Note that I am running ORA for the genes with unique NPC eQTL using a custom background of teh full gene NPC gene list instead of genes with distant eQTL.
@@ -234,7 +245,7 @@ gostplot(g.chr1, capped = F)
 ```{r chr1_ora_table}
 
 g.chr1$result %>% 
-  select(source, term_name, intersection_size, term_size , FDR = p_value) %>%
+  select(source, term_name, intersection_size, term_size , FDR = p_value, intersection) %>%
   filter( FDR < 0.01) %>%
   mutate_if(is.numeric, formatC, digits =2, format ="fg") %>%
   create_dt()
@@ -1381,7 +1392,7 @@ chr11.meds.ranked.sum
 
 ```
 
-```{r chr11_meds_plot, fig.height=5, fig.width=14}
+```{r chr11_meds_plot2, fig.height=5, fig.width=14}
 
 results <- chr11.meds.ranked %>%
   ungroup() %>%
