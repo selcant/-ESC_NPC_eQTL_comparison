@@ -590,6 +590,14 @@
         "S4Vectors"
       ]
     },
+    "VGAM": {
+      "Package": "VGAM",
+      "Version": "1.1-7",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "49541ee41be830894419bcf700d4e625",
+      "Requirements": []
+    },
     "WebGestaltR": {
       "Package": "WebGestaltR",
       "Version": "0.4.5",
@@ -759,6 +767,28 @@
       "Requirements": [
         "rlang",
         "vctrs"
+      ]
+    },
+    "bmediatR": {
+      "Package": "bmediatR",
+      "Version": "0.1.3",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteRepo": "bmediatR",
+      "RemoteUsername": "wesleycrouse",
+      "RemoteRef": "HEAD",
+      "RemoteSha": "28a47c71a0c2b9d0f1b76ca2e5d9911808ab25fe",
+      "Hash": "3265db676b3035800e475bfc0622eb66",
+      "Requirements": [
+        "VGAM",
+        "dplyr",
+        "magrittr",
+        "matrixStats",
+        "qtl2",
+        "tibble",
+        "tidyr",
+        "tidyselect"
       ]
     },
     "boot": {
@@ -1678,6 +1708,26 @@
         "magrittr",
         "pkgconfig",
         "rlang"
+      ]
+    },
+    "intermediate": {
+      "Package": "intermediate",
+      "Version": "0.2-4",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteRepo": "intermediate",
+      "RemoteUsername": "simecek",
+      "RemoteRef": "HEAD",
+      "RemoteSha": "1e4ec77a92889f7548da766cb28abab18df952dc",
+      "Hash": "00b91a20b66b0a1531a72c4710f45192",
+      "Requirements": [
+        "dplyr",
+        "ggplot2",
+        "htmlwidgets",
+        "magrittr",
+        "plotly",
+        "testthat"
       ]
     },
     "interp": {
