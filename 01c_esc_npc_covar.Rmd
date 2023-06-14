@@ -2,15 +2,11 @@
 title: ""
 output:
   html_document:
-    toc: true
-    toc_depth: 4
-    toc_float: 
-      collapsed: false
-      smooth_scroll: false
+    toc: false
     df_print: paged
     code_folding: hide
 ---
-    
+
 ```{r setup}
 
 options(stringsAsFactors = F)
@@ -21,7 +17,7 @@ knitr::opts_knit$set(progress=FALSE)
 
 # Covariation in ESC and NPC transcriptome {.tabset .tabset-fade .tabset-pills}
 
-## Overlap between transcriptomes 
+## Overlap between transcriptomes
 
 ```{r,fig.width=8, fig.height=4, warning=FALSE, message=FALSE}
 
@@ -85,6 +81,61 @@ var.esc_rna <- inner_join(var.esc_rna, mean.esc_rna) %>%
 
 ```
 
+```{r npc_stats, warning=FALSE, message=FALSE}
+
+# npc_rna gene stats
+var.npc_rna <- expr.npc_rna %>%
+  as_tibble(.) %>%
+  summarise_all(list(~ var(., na.rm = T))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(ensembl_gene_id = rowname, var = V1) %>%
+  arrange(desc(var))
+
+n.npc_rna <- expr.npc_rna %>%
+  as_tibble(.) %>%
+  summarise_all(list(~ sum(!is.na(.)))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(ensembl_gene_id = rowname, n = V1) %>%
+  arrange(desc(n))
+
+mean.npc_rna <- expr.npc_rna %>%
+  as_tibble(.) %>%
+  summarise_all(list(~ mean(., na.rm = T))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(ensembl_gene_id = rowname, mean = V1) %>%
+  arrange(desc(mean))
+
+var.npc_rna <- inner_join(var.npc_rna, mean.npc_rna) %>%
+  inner_join(., n.npc_rna) %>%
+  left_join(., select(all.genes, ensembl_gene_id, mgi_symbol, gene_chr)) %>%
+  mutate(sd = sqrt(var)) %>%
+  mutate(cv.npc_rna = 100 * sd / (mean)) %>%
+  rename(mean.npc_rna = mean, sd.npc_rna = sd, n.npc_rna=n, var.npc_rna=var)
+
+# npc stats per sample
+var_npc_per_sample <- expr.npc_rna %>% 
+  t() %>% 
+  as_tibble( rownames = "ensembl_gene_id") %>%
+  summarise( across( where(is.numeric),  var , na.rm=T )) %>% 
+  pivot_longer( 1:ncol(.), names_to = "sampleid", values_to ="var_sample") %>% 
+  left_join( select(covarTidy.npc_rna, sampleid, sex))
+  
+
+mean_npc_per_sample <- expr.npc_rna %>%
+  t() %>% 
+  as_tibble( rownames = "ensembl_gene_id") %>%
+  summarise( across( where(is.numeric),  mean , na.rm=T )) %>% 
+  pivot_longer( 1:ncol(.), names_to = "sampleid", values_to ="mean_sample") %>% 
+  left_join( select(covarTidy.npc_rna, sampleid, sex))
+
+```
+ 
 ```{r stat_plots_esc_npc, fig.height=4, fig.width=9, warning=FALSE, message=FALSE}
 
 # mean esc vs npc
@@ -138,8 +189,66 @@ ggarrange(p.mean, p.cv,  nrow = 1)
 ```
 
 
-## Correlation between transcriptomes 
+Comparing the variance distribution in ESC (n = 184) and NPC (n = 186) samples.
 
+```{r esc_npc_var_dist, fig.height=4, fig.width=10}
+
+var.esc_rna %>% 
+  full_join( var.npc_rna) %>% 
+  pivot_longer( cols = c("var.esc_rna","var.npc_rna","sd.esc_rna","sd.npc_rna","n.esc_rna","n.npc_rna","mean.esc_rna","mean.npc_rna", "cv.esc_rna","cv.npc_rna"),names_to = c("parameter","type"),names_sep = "[.]", values_to ="value" ) %>% 
+  filter(parameter == "var") %>% 
+  ggplot() +
+  aes(x = type,
+      y = value,
+      col = type) +
+  geom_violin()+
+  geom_boxplot( width = 0.2)+
+  xlab("Variance") +
+  theme_pubclean(base_size = 14)+
+  scale_y_log10()+
+  scale_color_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]]))+
+  scale_fill_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]])) -> var_plot
+
+var.esc_rna %>% 
+  full_join( var.npc_rna) %>% 
+  pivot_longer( cols = c("var.esc_rna","var.npc_rna","sd.esc_rna","sd.npc_rna","n.esc_rna","n.npc_rna","mean.esc_rna","mean.npc_rna", "cv.esc_rna","cv.npc_rna"),names_to = c("parameter","type"),names_sep = "[.]", values_to ="value" ) %>% 
+  filter(parameter == "cv") %>% 
+  ggplot() +
+  aes(x = type,
+      y = value,
+      col = type) +
+  geom_violin()+
+  geom_boxplot( width = 0.2)+
+  xlab("%CV") +
+  theme_pubclean(base_size = 14)+
+  scale_y_log10()+
+  scale_color_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]]))+
+  scale_fill_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]])) -> cv_plot
+
+var.esc_rna %>% 
+  full_join( var.npc_rna) %>% 
+  pivot_longer( cols = c("var.esc_rna","var.npc_rna","sd.esc_rna","sd.npc_rna","n.esc_rna","n.npc_rna","mean.esc_rna","mean.npc_rna", "cv.esc_rna","cv.npc_rna"),names_to = c("parameter","type"),names_sep = "[.]", values_to ="value" ) %>% 
+  filter(parameter == "sd") %>% 
+  ggplot() +
+  aes(x = type,
+      y = value,
+      col = type) +
+  geom_violin()+
+  geom_boxplot( width = 0.2)+
+  xlab("SD") +
+  theme_pubclean(base_size = 14)+
+  scale_y_log10()+
+  scale_color_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]]))+
+  scale_fill_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]])) -> sd_plot
+
+ggarrange(var_plot, sd_plot, cv_plot, nrow = 1)
+
+```
+
+
+## Correlation analysis
+
+### Between transcriptomes
 
 ```{r sample_corr, warning=FALSE, message=FALSE}
 
@@ -159,12 +268,6 @@ expr_cor_sp <- rcorr(shared.expr.esc_rna2,
                     shared.expr.npc_rna2,
                     type = "pearson")
 
-```
-
-Pearson correlation between ESC and NPC transcriptomes using upper quartile normalized, batch corrected transcript abundance values.
-
-```{r sample_cor_hist, fig.width=6, fig.height=4, warning=FALSE, message=FALSE}
-
 sample_cor_df <- as_tibble( rankZ_cor_sp$r[colnames(shared.expr.esc_rna1), colnames(shared.expr.npc_rna1)],
                             rownames = "esc") %>%
   pivot_longer( colnames(shared.expr.npc_rna1), names_to = "npc", values_to = "cor_rankz") %>%
@@ -182,6 +285,83 @@ sample_cor_df <- as_tibble( rankZ_cor_sp$r[colnames(shared.expr.esc_rna1), colna
       pivot_longer( colnames(shared.expr.npc_rna2), names_to = "npc", values_to = "p_val_expr") ) ) 
   
 
+```
+
+```{r null_dist_sample_corr, eval =F}
+sample_cor <- c()
+for( i in 1:1000){
+  # randomizing the sample names 1000 times and getting correlations
+
+  shared_npc_rna_mat <-  t(exprZ.npc_rna[shared.samples, shared.genes])
+  # randomize the sample names
+  colnames(shared_npc_rna_mat) <- paste0( sample(colnames(shared_npc_rna_mat), ncol(shared_npc_rna_mat)),"_npc")
+
+  shared_esc_rna_mat <-  t(exprZ.esc_rna[shared.samples, shared.genes])
+  # randomize the sample names
+  colnames(shared_esc_rna_mat) <- paste0( sample(colnames(shared_esc_rna_mat), ncol(shared_esc_rna_mat)),"_esc")
+
+  measure.cor.df <- rcorr( x = shared_npc_rna_mat,
+                         y = shared_esc_rna_mat,
+                         type = "pearson")
+
+  sample_cor[[i]] <- as_tibble( measure.cor.df$r[colnames(shared_npc_rna_mat), colnames(shared_esc_rna_mat)],
+                            rownames = "npc_sample") %>%
+  pivot_longer( colnames(shared_esc_rna_mat), names_to = "esc_sample", values_to = "r") %>%
+  inner_join( (as_tibble( measure.cor.df$P[colnames(shared_npc_rna_mat), colnames(shared_esc_rna_mat)],
+                            rownames = "npc_sample") %>%
+      pivot_longer( colnames(shared_esc_rna_mat), names_to = "esc_sample", values_to = "p_val") ) ) %>%
+    mutate( n = i)
+
+}
+
+save(sample_cor, file = here("_data","npc_esc_rna_sample_cor_perm_pearson.RData"))
+```
+
+```{r plot_null_dist, fig.width=5, fig.height=6}
+
+load(here("_data","npc_esc_rna_sample_cor_perm_pearson.RData"))
+
+sample_cor %>% 
+  enframe() %>% 
+  unnest(value) %>% 
+  mutate( npc_sample = gsub("_npc","",npc_sample) ,
+          esc_sample = gsub("_esc","",esc_sample)) %>% 
+  filter( npc_sample == esc_sample) -> null_sample_cor_dist
+
+sample_cor_df %>%
+  mutate( sampleid_esc = gsub(".esc_rna","",esc),
+          sampleid_npc = gsub(".npc_rna","", npc)) %>%
+  filter( sampleid_esc == sampleid_npc) %>% 
+  mutate( sampleid = sampleid_npc,
+           r= cor_expr)  -> real_sample_cor_dist
+
+null_sample_cor_dist %>% 
+  mutate( type = "Null") %>% 
+  select( type, r) %>% 
+  rbind( real_sample_cor_dist %>% 
+           mutate( type = "Real") %>% 
+           select( type, r)) %>% 
+  ggplot()+
+  aes( x = type,
+       y = r, 
+       col = type )+
+  geom_violin( show.legend = F)+
+  geom_boxplot(width = 0.1, show.legend = F)+
+  scale_color_manual( values = c("black","blue"))+
+  theme_pubclean(base_size = 18)+
+  theme(legend.position="none")+
+  ylab("Correlation")+
+  xlab("Distribution")+
+  stat_compare_means( label.y = 1, label.x = 1.15)+
+  ylim(-1,1) -> null_dist_plot
+
+```
+
+Pearson correlation between ESC and NPC transcriptomes using upper quartile normalized, batch corrected transcript abundance values.
+
+```{r sample_cor_hist, fig.width=6, fig.height=4, warning=FALSE, message=FALSE}
+
+
 
 sample_cor_df %>% 
   mutate( sampleid_esc = gsub(".esc_rna","",esc),
@@ -198,15 +378,24 @@ sample_cor_df %>%
   fill_palette("npg")+
   xlim(0,1)+
   xlab("Correlation")+
-  ylab("")
+  ylab("") -> sample_hist
 
 
 ```
 
 
-## Correlation between genes
+```{r sample_corr_plot, fig.height=5, fig.width=9}
 
-Add here - gene based correlations, ORA with significantly positively correlated + negatively correlated + no correlation genes
+ggarrange(sample_hist, null_dist_plot, widths = c(1, 0.5))
+
+```
+
+<br/>
+
+<br/>
+
+
+### Between genes
 
 ```{r gene_cor, eval = FALSE}
 
@@ -229,6 +418,8 @@ save(gene_cor_df, file = here("_data","gene_cor_df.RData"))
 
 ```
 
+Histogram of correlations for all genes between ESC and NPC lines.
+
 ```{r gene_cor_plot, warning=FALSE, message=FALSE, fig.height=4, fig.width=6}
 load(here("_data","gene_cor_df.RData"))
 
@@ -249,6 +440,7 @@ gene_cor_df %>%
 
 ```
 
+Table with annotated correlations.
 
 ```{r gene_cor_table, warning=FALSE, message=FALSE}
 
@@ -260,6 +452,7 @@ gene_cor_df %>%
 
 ```
 
+Overrpresentation results for genes with significant negative and positive correlation and genes with no correlation. 
 
 ```{r gene_cor_ora, warning=FALSE, message=FALSE}
 
@@ -313,11 +506,9 @@ ora_all_corr %>%
 
 ```
 
+## Uniquely expressed genes
 
-
-
-
-## NPC specific genes
+### NPC specific genes
 
 Here are the overrepresentation results using genes only expressed in NPC lines using all of the genes identified in ESC and NPC lines as the custom background.
 
@@ -345,7 +536,6 @@ gostplot(npc_specific_ora)
 
 ```
 
-
 ```{r npc_specific_ora_table, warning=FALSE, message=FALSE}
 
 npc_specific_ora$result %>% 
@@ -356,12 +546,14 @@ npc_specific_ora$result %>%
 
 ```
 
+<br/>
+
+<br/>
 
 
-## ESC specific genes
+### ESC specific genes
 
 Here are the overrepresentation results using genes only expressed in ESC lines using all of the genes identified in ESC and NPC lines as the custom background.
-
 
 ```{r esc_specific_genes_ora, cache=TRUE, warning=FALSE, message=FALSE}
 
@@ -387,7 +579,6 @@ gostplot(esc_specific_ora, capped = FALSE)
 
 ```
 
-
 ```{r esc_specific_ora_table, warning=FALSE, message=FALSE}
 
 esc_specific_ora$result %>% 
@@ -397,7 +588,6 @@ esc_specific_ora$result %>%
   create_dt()
 
 ```
-
 
 ## Gene Set Variation Analysis of combined ESC-NPC Data set
 
@@ -494,13 +684,13 @@ gsva_rna_esc_npc_tukey %>%
 
 ```
 
-Below are the list of GO Biological processes that show significant differences by cell type or sex(adjusted p-value <0.01).
+Below are the list of GO Biological processes that show significant differences by cell type, sex(adjusted p-value \<0.01) and the interaction term.
 
 ```{r gsva_results_table}
 
 signif_results_tukey_rna_esc_npc %>%
   filter( Category %in% go_bp$GOID) %>%
-  filter( term != "type:sex") %>% 
+  #filter( term != "type:sex") %>% 
   select(Effect= term, Category, TERM, group1, group2, estimate,p.adj) %>% 
   filter( p.adj < 0.01) %>% 
   distinct() %>% 
@@ -605,6 +795,71 @@ gsva_rna_esc_npc_results %>%
 ggarrange( plot_nerv, plot_translation, common.legend =  TRUE, legend = "none", nrow = 1)
 
 ```
+
+
+```{r fig_2ab, fig.height=4, fig.width=12}
+
+# sample_hist with the correlations
+
+# gsva examples
+gsva_plot <- ggarrange( plot_nerv, plot_translation, common.legend =  TRUE, legend = "none", nrow = 1)
+
+figure2_ab <- ggarrange( sample_hist, gsva_plot, nrow = 1, widths = c(.5, 1))
+
+figure2_ab
+# ggsave(figure2_ab, filename = here("figures","figure2_ab.svg"), width = 12, height = 4, dpi = 300, units = "in")
+
+```
+
+<!-- ### QTL mapping with GSVA scores -->
+
+<!-- ```{r gsva_qtl_scans, eval = F} -->
+
+<!-- gsva_rna_esc_npc_results %>% -->
+<!--   filter( type =="esc") %>%  -->
+<!--   select(Category, sampleid, Enrichment_Score) %>% -->
+<!--   pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>% -->
+<!--   column_to_rownames("sampleid") %>% -->
+<!--   as.matrix() -> gsva_esc_npc_results_signif_mat_esc -->
+
+<!-- gsva_rna_esc_npc_results %>% -->
+<!--   filter( type =="esc") %>%  -->
+<!--   select(Category, sampleid, Enrichment_Score) %>% -->
+<!--   pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>% -->
+<!--   column_to_rownames("sampleid") %>% -->
+<!--   as.matrix() -> gsva_esc_npc_results_signif_mat_npc  -->
+
+<!-- gsva_rna_esc_npc_results %>% -->
+<!--   filter( type =="esc") %>%  -->
+<!--   select(Category, sampleid, Enrichment_Score) %>% -->
+<!--   pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>% -->
+<!--   column_to_rownames("sampleid") %>% -->
+<!--   as.matrix() -> gsva_esc_npc_results_signif_mat_npc -->
+
+<!-- # rankZ -->
+<!-- gsva_esc_npc_results_signif_mat_rankZ <- apply(gsva_esc_npc_results_signif_mat, 2,rankZ ) -->
+
+<!-- # qtl mapping -->
+<!-- gsva_esc_npc_qtl <- scan1( genoprobs = probs.npc_rna, -->
+<!--                    pheno = gsva_esc_npc_results_signif_mat_rankZ, -->
+<!--                    kinship = kinship_loco.npc_rna, -->
+<!--                    addcovar = covar.npc_rna) -->
+<!-- save( gsva_esc_npc_qtl, file = here("_data","GSVA_npc_esc_qtl_scans.RData")) -->
+
+<!-- load(here("_data","GSVA_npc_esc_qtl_scans.RData")) -->
+<!-- gsva_esc_npc_qtl_peaks <- find_peaks( gsva_esc_npc_qtl, threshold = 7, gmap) -->
+<!-- # add interp_peak_bp, before, after -->
+<!-- gsva_esc_npc_qtl_peaks <- gsva_esc_npc_qtl_peaks %>%  -->
+<!--   left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>%  -->
+<!--   mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>%  -->
+<!--   mutate(phenotype=lodcolumn) %>% -->
+<!--   mutate( peak_chr = chr, -->
+<!--           peak_cM = pos) %>% -->
+<!--   interp_bp(.) #add bp location for peaks -->
+
+<!-- ``` -->
+
+
 
 
 
