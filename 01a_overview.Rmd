@@ -2,11 +2,7 @@
 title: "Experimental overview"
 output:
   html_document:
-    toc: true
-    toc_depth: 4
-    toc_float: 
-      collapsed: false
-      smooth_scroll: false
+    toc: false
     df_print: paged
     code_folding: hide
 ---
@@ -137,6 +133,25 @@ do_global_mediation <- function(gene.name,p.chr, peak.info, probs, expr.target, 
     left_join(.,all.genes) %>% 
     rename("mediator"="mgi_symbol")
   return(med.scan)
+}
+
+
+interp_bp <- function(df) {
+  chroms <- c(as.character(1:19), "X")
+  df <- arrange(df, peak_chr, peak_cM)
+  peak_gpos <- select(df, peak_chr, peak_cM)
+  chr <- peak_gpos$peak_chr
+  f <- factor(chr, chroms)
+  peak_gcoord_list <- split(peak_gpos$peak_cM, f)
+  peak_pcoord_list <- qtl2::interp_map(peak_gcoord_list, gmap, pmap)
+  df$interp_bp_peak <- unsplit(peak_pcoord_list, f)
+  df
+}
+
+
+rankZ <- function (x) {
+  x <- rank(x, na.last = "keep", ties.method = "average")/(sum(!is.na(x)) + 1)
+  qnorm(x)
 }
 
 ```
@@ -376,12 +391,12 @@ covarTidy.npc_rna %>%
 
 ```
 
-Here, I am contrasting global gene expression and eQTL mapping results between embryonic stem cells (ESCs) and neural progenitor cells (NPCs) derived from many Diversity Outbred (DO) mice. We analyzed RNA-seq data from a total of `r nrow(expr.esc_rna)` ESC and `r nrow(expr.npc_rna)` NPC lines; 127 lines had RNA-seq data for both ESCs and NPCs. After filtering out genes with low expression and genes not expressed in at least half of the samples, we detect `r formatC(ncol(expr.esc_rna),big.mark = ",")` in ESCs and `r formatC(ncol(expr.npc_rna),big.mark = ",")` in NPCs, with `r formatC(length(shared.genes),big.mark = ",")` genes detected in both cell types. The filtered data was then normalized to the upper quartile value (each read count is divided by the 75th percentile of the read counts across samples) to allow for comparison of expression measures within and across cell-types. Both data-sets were generated in batches, and we used ComBat as implemented in the R package sva to correct for batch effects while controlling for the sexes of lines in each batch. Both ESC and NPC expression values were transformed to rank normal scores prior to eQTL mapping.
+Here, I am contrasting global gene expression and eQTL mapping results between embryonic stem cells (ESCs) and neural progenitor cells (NPCs) derived from Diversity Outbred (DO) mice. We analyzed RNA-seq data from a total of `r nrow(expr.esc_rna)` ESC and `r nrow(expr.npc_rna)` NPC lines; 127 lines had RNA-seq data for both ESCs and NPCs. After filtering out genes with low expression and genes not expressed in at least half of the samples, we detect `r formatC(ncol(expr.esc_rna),big.mark = ",")` in ESCs and `r formatC(ncol(expr.npc_rna),big.mark = ",")` in NPCs, with `r formatC(length(shared.genes),big.mark = ",")` genes detected in both cell types. The filtered data was then normalized to the upper quartile value (each read count is divided by the 75th percentile of the read counts across samples) to allow for comparison of expression measures within and across cell-types. Both data-sets were generated in batches, and we used ComBat as implemented in the R package sva to correct for batch effects while controlling for the sexes of lines in each batch. Both ESC and NPC expression values were transformed to rank normal scores prior to eQTL mapping.
 
 
-In this first tab, I focus on the NPC transcriptome investigating the variation in gene expression in DO mNPCs using a variety of methods including: principal component analysis (PCA), gene set variation analysis (GSVA) and weighted correlation network analysis (WGCNA). Then, I looked at the co-variation across DO mNPCs and mESCs by looking at the agreement between transcriptomes within genetically identical samples and between genes across cell states. Further, there are genes uniquely expressed in each cell state which I functionally characterized using overrepresentation analysis (ORA). I used Wilcoxon rank sum test to identify differentially expressed genes in mNPCs in contrast to mESCs and functionally characterized up and down regulated genes using ORA.
+In this first tab, I focus on the NPC transcriptome investigating the variation in gene expression in DO mNPCs using a variety of methods including: principal component analysis (PCA), and gene set variation analysis (GSVA). Then, I looked at the co-variation across DO mNPCs and mESCs by looking at the agreement between transcriptomes within genetically identical samples and between genes across cell states. Further, there are genes uniquely expressed in each cell state which I functionally characterized using overrepresentation analysis (ORA). I used Wilcoxon rank sum test to identify differentially expressed genes in mNPCs in contrast to mESCs and functionally characterized up and down regulated genes using ORA.
 
-In the second tab, I am presenting the genetic mapping and mediation results with DO mNPC transcripts. First, I calculate the heritability of each transcript in DO mNPCs and present the DO mNPC eQTL map. Next, I integrate the DO mNPC eQTL map with the mESC eQTL map and compare the allel effects of overlapping eQTL. Mediation analysis results are summarized in two notebooks where the first one is summarizing the full mediation results focusing on local and distant eQTL with best mediators being ESC or NPC transcripts. Second notebook describes the DO mNPC eQTL hotspots, their characterization and mediation. 
+In the second tab, I am presenting the genetic mapping and mediation results with DO mNPC transcripts. First, I calculate the heritability of each transcript in DO mNPCs and present the DO mNPC eQTL map. Next, I integrate the DO mNPC eQTL map with the mESC eQTL map and compare the allele effects of overlapping eQTL. Mediation analysis results are summarized in two notebooks where the first one is summarizing the full mediation results focusing on local and distant eQTL with best mediators being ESC or NPC transcripts. Second notebook describes the DO mNPC eQTL hotspots, their characterization and mediation. 
 
 
 ```{r save_data_for_courtney, echo = F, eval = F}
@@ -406,9 +421,36 @@ save(
   expr.esc_rna,
   exprZ.esc_rna,
   esc.genes,
+  pmap, 
+  gmap, 
+  map_dat2,
+  shared.probs.npc_rna,
   file = here("_data",paste0("DO_mNPC_data_for_Courtney_",Sys.Date(),".RData"))
   
 )
+
+save(
+  expr.npc_rna,
+  exprZ.npc_rna,
+  probs.npc_rna,
+  covar.npc_rna,
+  covarTidy.npc_rna,
+  kinship_loco.npc_rna,
+  npc.genes,
+  peaks.npc_rna.wEffs,
+  expr.esc_rna,
+  exprZ.esc_rna,
+  esc.genes,
+  pmap, 
+  gmap, 
+  map_dat2,
+  shared.probs.npc_rna,
+  eqtl_npc_rna_meds,
+  eqtl_esc_rna_meds,
+  file = here("_data",paste0("DO_mNPC_data_for_bmediatr_",Sys.Date(),".RData"))
+  
+)
+
 
 # save(
 #   expr.esc_rna,
@@ -423,7 +465,42 @@ save(
 
 
 
+```{r save_data_for_dyrk1a, echo=FALSE, eval=FALSE}
 
+Dyrk1a_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.esc_rna >7.5, mgi_symbol =="Dyrk1a")
+
+dyrk1a_esc_rna <- exprZ.esc_rna[,Dyrk1a_eqtl$ensembl_gene_id,drop=FALSE]
+dyrk1a_npc_rna <- exprZ.npc_rna[,Dyrk1a_eqtl$ensembl_gene_id,drop=FALSE]
+
+load("/projects/munger-lab/projects/DO_mESC/proteomics/pQTL_website/_data/DO_mESC_pQTL_forMapping_noPoly_v3.RData")
+
+dyrk1a_esc_prot <- exprZ[,"ENSMUSP00000023614"]
+probs.esc_prot <- genoprobs
+covar.esc_prot <- covar
+kinship_loco.esc_prot <- kinship_loco
+
+save( Dyrk1a_eqtl,
+      dyrk1a_esc_rna,
+      dyrk1a_npc_rna,
+      dyrk1a_esc_prot,
+      probs.esc_rna,
+      probs.npc_rna,
+      probs.esc_prot,
+      kinship_loco.esc_rna,
+      kinship_loco.npc_rna,
+      kinship_loco.esc_prot,
+      covar.esc_rna,
+      covar.npc_rna,
+      covar.esc_prot,
+      gmap,
+      pmap,
+      map_dat2,
+  file = here("_data","Dyrk1a_QTL_data.RData")
+  )
+
+
+```
 
 
 
