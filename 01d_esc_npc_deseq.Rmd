@@ -2,11 +2,7 @@
 title: ""
 output:
   html_document:
-    toc: true
-    toc_depth: 4
-    toc_float: 
-      collapsed: false
-      smooth_scroll: false
+    toc: false
     df_print: paged
     code_folding: hide
 ---
@@ -150,7 +146,8 @@ Example:
 
 npc_up_genes <- upreg_npc_esc_ora$result %>%
   filter( term_name %in% c( "regulation of nervous system development",
-                            "central nervous system neuron differentiation")
+                            "central nervous system neuron differentiation",
+                            "ESC pluripotency pathways")
           )%>%
   select(term_name, intersection) %>%
   separate_rows(intersection, sep = ",") %>%
@@ -166,7 +163,7 @@ npc_up_genes <- upreg_npc_esc_ora$result %>%
 g<-graph_from_data_frame(npc_up_genes[,1:2], directed=FALSE)
 V(g)$lfc <- c((npc_up_genes %>% 
   select(mgi_symbol, log2foldchange) %>% 
-  distinct())$log2foldchange, 0,0) # last two are the category names
+  distinct())$log2foldchange, -10,-10,-10) # last two are the category names
 
 ggraph(g)+
   geom_edge_link(col="gray", alpha=0.1)+
@@ -249,7 +246,7 @@ npc_down_genes <- downreg_npc_esc_ora$result %>%
 g<-graph_from_data_frame(npc_down_genes, directed=FALSE)
 V(g)$lfc <- c((npc_down_genes %>% 
   select(mgi_symbol, log2foldchange) %>% 
-  distinct())$log2foldchange, 0,0,0) # last three are the category names
+  distinct())$log2foldchange, -10,-10,-10) # last three are the category names
 
 ggraph(g)+
   geom_edge_link(col="gray", alpha=0.1)+
@@ -266,3 +263,37 @@ ggraph(g)+
 
 ```
 
+
+## PC1 driver genes 
+
+For the most part, genes involved in processes I highlighted as overrepresented in PC1 drivers are downregulated in NPCs except for the genes with negative PC1 values which are upregulated. Hence overall the directionality of PC1 loadings and differential expression in NPCs are opposite. 
+
+```{r pc1_highlighted_genes_deseq, fig.height=6, fig.width=12}
+
+pc1_pluri_genes <- highlight_genes_pc1 %>% # from notebook 01b
+  left_join( npc_esc_wilcox_df %>%
+               select( ensembl_gene_id, log2foldchange, p) %>%
+               left_join( all.genes %>%
+                            select(mgi_symbol, ensembl_gene_id))) %>%
+  select( mgi_symbol, term_name, log2foldchange, PC1)
+
+
+
+g<-graph_from_data_frame(pc1_pluri_genes, directed=FALSE)
+V(g)$lfc <- c((pc1_pluri_genes %>%
+  select(mgi_symbol, log2foldchange) %>%
+  distinct())$log2foldchange, rep(-10, length(unique(pc1_pluri_genes$term_name))))
+
+ggraph(g, layout="stress")+
+  geom_edge_link(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-4,4))+
+  theme_classic()+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="Log Fold Change\nin NPCs")
+
+```
