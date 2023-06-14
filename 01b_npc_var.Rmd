@@ -2,11 +2,7 @@
 title: ""
 output:
   html_document:
-    toc: true
-    toc_depth: 4
-    toc_float: 
-      collapsed: false
-      smooth_scroll: false
+    toc: false
     df_print: paged
     code_folding: hide
 ---
@@ -19,11 +15,9 @@ knitr::opts_knit$set(progress=FALSE)
 
 ```
 
-
 # Variation in NPC transcriptome {.tabset .tabset-fade .tabset-pills}
 
-There are `r formatC(ncol(expr.npc_rna), big.mark = ",")` many genes measured across `r nrow(expr.npc_rna)` samples. 
-
+There are `r formatC(ncol(expr.npc_rna), big.mark = ",")` many genes measured across `r nrow(expr.npc_rna)` samples.
 
 ```{r npc_stats, warning=FALSE, message=FALSE}
 
@@ -80,10 +74,9 @@ mean_npc_per_sample <- expr.npc_rna %>%
 
 ```
 
-
 ## Overview
 
-Below are the distributions of mean and variation of transcripts in DO mNPC lines. 
+Below are the distributions of mean and variation of transcripts in DO mNPC lines.
 
 ```{r npc_stat_plots_gene, fig.width=12, fig.height=4, warning=FALSE, message=FALSE}
 
@@ -128,7 +121,6 @@ ggscatter(var.npc_rna,
 ggarrange( p.mean.hist, p.var.hist, p.var.mean, nrow = 1)
 
 ```
-
 
 Here are the distributions of mean and variation of DO mNPC lines.
 
@@ -178,7 +170,7 @@ full_join(var_npc_per_sample, mean_npc_per_sample) %>%
   strip.text.x = element_blank()
   )-> p.var.mean_sample
 
-ggarrange( p.var_sample.hist, p.mean_sample.hist, p.var.mean_sample, nrow = 1, widths = c(0.5,0.5,1))
+ggarrange( p.mean_sample.hist, p.var_sample.hist,  p.var.mean_sample, nrow = 1, widths = c(0.5,0.5,1))
 
 ```
 
@@ -190,7 +182,7 @@ pca.npc <- prcomp(expr.npc_rna, scale.=T, center=T)
 
 ```
 
-Let's look at the first five PCs and how they group the data for the NPC transcriptome. I am coloring the points by sex: **red = Male** and **black = Female**. No separation by sex is observed in the NPC data! 
+Let's look at the first five PCs and how they group the data for the NPC transcriptome. No separation by sex is observed in the NPC data!
 
 ```{r pca_plot_pc1to5, fig.width=10, fig.height=8, warning=FALSE, message=FALSE}
 
@@ -203,9 +195,11 @@ pca.npc$x%>%
     columns = 2:6, progress = FALSE, ggplot2::aes(color = sex),
     upper = list(continuous = "density", combo = "box_no_facet"),
     lower = list(continuous = "points", combo = "dot_no_facet")
-  ) + theme_pubclean(base_size = 14) +
+  ) + 
+  theme_pubclean(base_size = 14) +
   color_palette("npg")+
-  fill_palette("npg")
+  fill_palette("npg")+
+  theme(legend.position = "top")
 
 ```
 
@@ -244,7 +238,9 @@ pca.npc$x%>%
   theme_pubclean(base_size = 20)+
   color_palette("npg")+
   xlab(paste0("PC1 (",100*round(var_explained[1],2),"%)"))+
-  ylab(paste0("PC2 (",100*round(var_explained[2],2),"%)"))
+  ylab(paste0("PC2 (",100*round(var_explained[2],2),"%)")) -> pca_plot
+
+pca_plot
 
 ```
 
@@ -271,7 +267,6 @@ g.pc1$result <- g.pc1$result %>% filter(term_size < 660)
 
 ```
 
-
 ```{r ora_pc1_results}
 
 g.pc1$result %>% 
@@ -281,6 +276,198 @@ g.pc1$result %>%
   create_dt()
 
 ```
+
+Looking at the genes identified as part of:
+
+-   Spindle checkpoint and related processes
+
+-   Pluripotency regulation and related processes
+
+```{r ora_pc1_genes}
+
+# any category with spindle, segregation
+spindle_genes <- g.pc1$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "(?i)spindle") |
+            str_detect(term_name, "(?i)segregation")|
+            str_detect(term_name, "(?i)chromatid") |
+            str_detect(term_name, "(?i)kinetochore") 
+           #str_detect(term_name, "(?i)checkpoint") 
+            #str_detect(intersection,"Mad2l1")
+          ) %>% 
+  filter( !source %in% c("GO:CC","GO:MF")) %>% 
+  select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes)
+
+# any category with pluripotency, lifr, blastocyst, embryo
+pluri_genes <- g.pc1$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "leukemia inhibitory factor") |
+            str_detect(term_name, "blastocyst")|
+            str_detect(term_name, "embryo")) %>% 
+    select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes)
+
+```
+
+
+```{r, fig.width=12, fig.height=4}
+
+
+var.npc_rna %>% 
+  ggscatter(., 
+            x = "mean.npc_rna", 
+            y = "var.npc_rna", 
+            size = 3, 
+            alpha = 0.5,
+            col="gray",
+            yscale = "log10",
+            xscale = "log10",
+            show.legend.text = FALSE
+            ) +
+  xlab("Mean transcript abundance") +
+  ylab("Variance in transcript abundance") +
+  ggtitle("Pluripotency related genes")+
+  theme_pubclean(base_size = 18) + 
+  rremove("legend") +
+  geom_point(
+    data =   filter( var.npc_rna, ensembl_gene_id %in% pluri_genes$ensembl_gene_id) ,
+    col = "blue", alpha = 0.6, size = 3)  -> plot_pluri_genes
+
+
+var.npc_rna %>% 
+  ggscatter(., 
+            x = "mean.npc_rna", 
+            y = "var.npc_rna", 
+            size = 3, 
+            alpha = 0.5,
+            col="gray",
+            yscale = "log10",
+            xscale = "log10",
+            show.legend.text = FALSE
+            ) +
+  xlab("Mean transcript abundance") +
+  ylab("Variance in transcript abundance") +
+  ggtitle("SAC related genes")+
+  theme_pubclean(base_size = 18) + 
+  rremove("legend") +
+  geom_point(
+    data =   filter( var.npc_rna, ensembl_gene_id %in% spindle_genes$ensembl_gene_id) ,
+    col = "blue", alpha = 0.6, size = 3) -> plot_spindle_genes
+
+ggarrange( plot_pluri_genes, plot_spindle_genes, nrow =1 
+        )
+
+```
+
+
+```{r pluri_genes_pc1_values, fig.width=12, fig.height=6}
+
+pca.npc$rotation %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  left_join(all.genes, by = c("rowname" = "ensembl_gene_id")) %>%
+  filter( mgi_symbol %in% pluri_genes$mgi_symbol) %>% 
+  select(mgi_symbol, PC1) %>% 
+  full_join(pluri_genes) -> pluri_genes_pc1
+
+g<-graph_from_data_frame(pluri_genes_pc1[,c("mgi_symbol","term_name")], directed=FALSE)
+V(g)$lfc <- c((pluri_genes_pc1 %>% 
+  select(mgi_symbol, PC1) %>% 
+  distinct())$PC1, rep(NA, length(unique(pluri_genes_pc1$term_name)))) # last two are the category names
+
+ggraph(g)+
+  geom_edge_link(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-0.025,0.025))+
+  theme_classic()+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="PC1 loadings")
+
+
+```
+
+
+```{r spindle_genes_pc1_values, fig.width=14, fig.height=12}
+
+pca.npc$rotation %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  left_join(all.genes, by = c("rowname" = "ensembl_gene_id")) %>%
+  filter( mgi_symbol %in% spindle_genes$mgi_symbol) %>% 
+  select(mgi_symbol, PC1) %>% 
+  full_join(spindle_genes) -> spindle_genes_pc1
+
+g<-graph_from_data_frame(spindle_genes_pc1[,c("mgi_symbol","term_name")], directed=FALSE)
+V(g)$lfc <- c((spindle_genes_pc1 %>% 
+  select(mgi_symbol, PC1) %>% 
+  distinct())$PC1, rep(NA, length(unique(spindle_genes_pc1$term_name)))) # last two are the category names
+
+ggraph(g)+
+  geom_edge_link(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-0.025,0.025))+
+  theme_classic()+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="PC1 loadings")
+
+
+```
+
+Highligthing two ontologies in particular for the poster and perhaps the paper(?):
+
+```{r pc1_ora_higlight, fig.width=14, fig.height=4}
+
+highlights <- c("response to leukemia inhibitory factor",
+                "Mitotic Spindle Checkpoint"
+                )
+
+g.pc1$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( term_name %in% highlights) %>% 
+  select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes) %>% 
+  left_join(
+    pca.npc$rotation %>%
+      as_tibble( rownames = "ensembl_gene_id")
+  )-> highlight_genes_pc1
+
+g<-graph_from_data_frame(highlight_genes_pc1[,c("mgi_symbol","term_name")], directed=F)
+V(g)$lfc <- c((highlight_genes_pc1 %>% 
+  select(mgi_symbol, PC1) %>% 
+  distinct())$PC1, rep(NA, length(unique(highlight_genes_pc1$term_name)))) # last two are the category names
+
+highlights_network_plot <- ggraph(g,layout = "stress")+
+  geom_edge_link(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-0.025,0.025))+
+  theme_classic()+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="PC1 loadings")
+
+figure_1b <- ggarrange(pca_plot, highlights_network_plot, widths = c(0.6, 1.2))
+figure_1b
+
+# ggsave(figure_1b, filename = here("figures","figure_1b.svg"),
+#                                                 width = 14, height = 4, units = "in", dpi = 300)
+
+```
+
 
 ## Most and least variable genes in NPCs
 
@@ -318,7 +505,7 @@ g.low.var$result <- g.low.var$result %>% filter(term_size < 660)
 
 ```
 
-ORA results with most variable (highest .05% CV) genes in mNPCs (FDR <0.01):
+ORA results with most variable (highest .05% CV) genes in mNPCs (FDR \<0.01):
 
 ```{r ora_most_var}
 
@@ -331,11 +518,23 @@ g.high.var$result %>%
 ```
 
 <br>
+
 <br>
 
-ORA results with least variable (lowest .05% CV) genes in mNPCs (FDR <0.01):
+ORA results with least variable (lowest .05% CV) genes in mNPCs (FDR \<0.01):
 
 ```{r ora_least_var}
+
+spindle_genes_low_var <- g.low.var$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "(?i)spindle") |
+            str_detect(term_name, "(?i)segregation")|
+            str_detect(term_name, "(?i)chromatid") |
+            str_detect(term_name, "(?i)kinetochore") |
+            str_detect(intersection,"Mad2l1")) %>% 
+  select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes)
 
 g.low.var$result %>% 
   select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
@@ -345,6 +544,115 @@ g.low.var$result %>%
 
 ```
 
+## Sex effects on gene expression
+
+```{r sex_eff, cache = TRUE}
+
+# doing an anova first and then tukey's 
+# reporting ones with significance on both as genes with sex effects
+
+# updating the code to use anova followed by tukey's hsd:
+expr.npc_rna %>%
+  t() %>% 
+  as_tibble(rownames = "ensembl_gene_id") %>%
+  pivot_longer( cols = rownames(expr.npc_rna),
+                values_to = "gene_expr",
+                names_to = "sampleid") %>% 
+  left_join(., select(covarTidy.npc_rna, sampleid, sex)) %>% 
+  group_by(ensembl_gene_id) %>% 
+  rstatix::anova_test( gene_expr ~ sex) %>% 
+  rstatix::adjust_pvalue( method = "BH") %>% 
+  rstatix::add_significance("p.adj") %>% 
+  as_tibble() -> npc_rna_sex_aov
+
+# passing the full data to tukey's then filtering
+expr.npc_rna %>%
+  t() %>% 
+  as_tibble(rownames = "ensembl_gene_id") %>% 
+  pivot_longer( cols = rownames(expr.npc_rna),
+                values_to = "gene_expr",
+                names_to = "sampleid") %>% 
+  left_join(., select(covarTidy.npc_rna, sampleid, sex)) %>% 
+  group_by(ensembl_gene_id) %>% 
+  rstatix::tukey_hsd(gene_expr ~ sex) %>% 
+  filter( ensembl_gene_id %in% (filter(npc_rna_sex_aov, p.adj.signif != "ns"))$ensembl_gene_id & # filtering to only include genes with signif aov + tukeys
+            p.adj.signif != "ns") -> npc_rna_sex_tukeys
+
+
+# get the medians for later
+expr.npc_rna %>%
+  t() %>% 
+  as_tibble(rownames = "ensembl_gene_id") %>%
+  pivot_longer( cols = rownames(expr.npc_rna),
+                values_to = "gene_expr",
+                names_to = "sampleid") %>% 
+  left_join(., select(covarTidy.npc_rna, sampleid, sex)) %>% 
+  group_by(ensembl_gene_id,sex) %>% 
+  summarize( med = median(gene_expr, na.rm =T)) %>% 
+  pivot_wider( id_cols = "ensembl_gene_id",
+               names_from = "sex",
+               values_from = "med")-> npc_rna_sex_med
+
+```
+
+```{r sex_effects_table}
+
+npc_rna_sex_tukeys %>%
+  left_join( npc.genes) %>% 
+  left_join( npc_rna_sex_med) %>% 
+  arrange(p.adj) %>%
+  mutate_if( is.numeric, round, 2) %>%
+  select(
+    `Gene ID` = ensembl_gene_id,
+    `MGI Symbol`= mgi_symbol, 
+    `Gene location (chr)` = gene_chr,
+    `Female median`=`F`,
+    `Male median`= M
+   ) %>%
+  create_dt()
+
+```
+
+Overrepresented pathways that show sex effects:
+
+```{r ora_sex_effs}
+
+sex_eff_genes <- npc_rna_sex_tukeys %>%
+  left_join( npc.genes) %>% 
+  filter(p.adj < 0.05) 
+
+npc_sex_ora <- gost(query = sex_eff_genes$mgi_symbol, 
+                 organism = "mmusculus",
+                 significant = TRUE, 
+                 domain_scope = "custom",
+                 custom_bg = npc.genes$mgi_symbol,
+                 correction_method = "fdr",
+                 evcodes = TRUE)
+npc_sex_ora$result <- npc_sex_ora$result %>% filter(term_size <500)
+
+```
+
+```{r}
+
+# any category with spindle, segregation
+spindle_genes_sex_eff <- npc_sex_ora$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "(?i)spindle") |
+            str_detect(term_name, "(?i)segregation")|
+            str_detect(term_name, "(?i)chromatid") |
+            str_detect(term_name, "(?i)kinetochore") |
+            str_detect(intersection,"Mad2l1")) %>% 
+  select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes)
+
+npc_sex_ora$result %>% 
+    select( term_name, source, FDR = p_value, term_size, intersection_size,intersection) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
 
 ## Gene set variation analysis
 
@@ -432,7 +740,7 @@ gsva_rna_tukey %>%
 
 ```
 
-Below are the list of GO Biological processes that show significant differences by sex or genotype at the *Lifr* locus, or their interaction (adjusted p-value < 0.01). 
+Below are the list of GO Biological processes that show significant differences by sex or genotype at the *Lifr* locus, or their interaction (adjusted p-value \< 0.01).
 
 ```{r gsva_results_table}
 
@@ -448,6 +756,50 @@ signif_results_tukey_rna %>%
 
 ```
 
+### QTL mapping with GSVA scores
+
+```{r gsva_qtl_scans}
+
+gsva_rna_results %>%
+  # filter( Category %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
+  #                                                         p.adj.signif != "ns" ))$Category ) %>%
+  select(Category, sampleid, Enrichment_Score) %>%
+  pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>%
+  column_to_rownames("sampleid") %>%
+  as.matrix() -> gsva_results_signif_mat
+
+# rankZ
+gsva_results_signif_mat_rankZ <- apply(gsva_results_signif_mat, 2,rankZ )
+
+# qtl mapping
+# gsva_qtl <- scan1( genoprobs = probs.npc_rna,
+#                    pheno = gsva_results_signif_mat_rankZ,
+#                    kinship = kinship_loco.npc_rna,
+#                    addcovar = covar.npc_rna)
+# save( gsva_qtl, file = here("_data","GSVA_npc_qtl_scans.RData"))
+
+load(here("_data","GSVA_npc_qtl_scans.RData"))
+gsva_qtl_peaks <- find_peaks( gsva_qtl, threshold = 7, gmap)
+# add interp_peak_bp, before, after
+gsva_qtl_peaks <- gsva_qtl_peaks %>% 
+  left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% 
+  mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>% 
+  mutate(phenotype=lodcolumn) %>%
+  mutate( peak_chr = chr,
+          peak_cM = pos) %>%
+  interp_bp(.) #add bp location for peaks
+
+```
 
 
+```{r}
+
+gsva_qtl_peaks %>% 
+  select( GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
+  filter( GOID %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
+                                                           p.adj.signif != "ns" ))$Category ) %>%
+  mutate_if(is.numeric, round, 2) %>% 
+  create_dt()
+
+```
 
