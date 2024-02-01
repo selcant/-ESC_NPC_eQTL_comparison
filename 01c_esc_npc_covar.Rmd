@@ -652,7 +652,7 @@ load(here("_data","Results_from_GSVA_2022-09-23.RData"))
 # following up on rna results
 gsva_rna_esc_npc %>% 
   as_tibble(rownames = "Category") %>% 
-  #filter( Category %in% go_bp$GOID) %>% #filtering for BP
+  filter( Category %in% go_bp$GOID) %>% #filtering for BP
   pivot_longer( cols = rownames(shared.expr.merged),
                 values_to = "Enrichment_Score",
                 names_to = "sample") %>% 
@@ -684,15 +684,24 @@ gsva_rna_esc_npc_tukey %>%
 
 ```
 
-Below are the list of GO Biological processes that show significant differences by cell type, sex(adjusted p-value \<0.01) and the interaction term.
+Below are the list of GO Biological processes that show significant differences by cell type, and sex(adjusted p-value \<0.01).
 
 ```{r gsva_results_table}
 
-signif_results_tukey_rna_esc_npc %>%
-  filter( Category %in% go_bp$GOID) %>%
-  #filter( term != "type:sex") %>% 
+gsva_rna_esc_npc_tukey %>%
+  filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="sex"))$Category, term == "sex" ) %>%
+  rbind(
+    gsva_rna_esc_npc_tukey %>%
+      filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="type"))$Category, term == "type" )
+    
+  ) %>% 
+  #   rbind(
+  #   gsva_rna_esc_npc_tukey %>%
+  #     filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="type:sex"))$Category, term == "type:sex" )
+  #   
+  # ) %>% 
   select(Effect= term, Category, TERM, group1, group2, estimate,p.adj) %>% 
-  filter( p.adj < 0.01) %>% 
+  #filter( p.adj < 0.01) %>% 
   distinct() %>% 
  mutate( "Adjusted p-value" = formatC(p.adj, digits=2, format ="e"),
           estimate= round(estimate,2)) %>% 
@@ -816,25 +825,19 @@ figure2_ab
 <!-- ```{r gsva_qtl_scans, eval = F} -->
 
 <!-- gsva_rna_esc_npc_results %>% -->
-<!--   filter( type =="esc") %>%  -->
+<!--   filter( type =="esc") %>% -->
 <!--   select(Category, sampleid, Enrichment_Score) %>% -->
 <!--   pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>% -->
 <!--   column_to_rownames("sampleid") %>% -->
 <!--   as.matrix() -> gsva_esc_npc_results_signif_mat_esc -->
 
 <!-- gsva_rna_esc_npc_results %>% -->
-<!--   filter( type =="esc") %>%  -->
-<!--   select(Category, sampleid, Enrichment_Score) %>% -->
-<!--   pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>% -->
-<!--   column_to_rownames("sampleid") %>% -->
-<!--   as.matrix() -> gsva_esc_npc_results_signif_mat_npc  -->
-
-<!-- gsva_rna_esc_npc_results %>% -->
-<!--   filter( type =="esc") %>%  -->
+<!--   filter( type =="npc") %>% -->
 <!--   select(Category, sampleid, Enrichment_Score) %>% -->
 <!--   pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>% -->
 <!--   column_to_rownames("sampleid") %>% -->
 <!--   as.matrix() -> gsva_esc_npc_results_signif_mat_npc -->
+
 
 <!-- # rankZ -->
 <!-- gsva_esc_npc_results_signif_mat_rankZ <- apply(gsva_esc_npc_results_signif_mat, 2,rankZ ) -->
@@ -849,9 +852,9 @@ figure2_ab
 <!-- load(here("_data","GSVA_npc_esc_qtl_scans.RData")) -->
 <!-- gsva_esc_npc_qtl_peaks <- find_peaks( gsva_esc_npc_qtl, threshold = 7, gmap) -->
 <!-- # add interp_peak_bp, before, after -->
-<!-- gsva_esc_npc_qtl_peaks <- gsva_esc_npc_qtl_peaks %>%  -->
-<!--   left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>%  -->
-<!--   mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>%  -->
+<!-- gsva_esc_npc_qtl_peaks <- gsva_esc_npc_qtl_peaks %>% -->
+<!--   left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% -->
+<!--   mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>% -->
 <!--   mutate(phenotype=lodcolumn) %>% -->
 <!--   mutate( peak_chr = chr, -->
 <!--           peak_cM = pos) %>% -->

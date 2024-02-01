@@ -389,6 +389,12 @@ covarTidy.npc_rna %>%
   left_join( covar.lifr, by = c("sampleid"="rowname")) -> covarTidy.npc_rna
 
 
+#read in mitotic spindle assembly genes, go term 
+sac_genes <- read_tsv(here("_data","mitotic_sac_genes.tsv"), col_names = c("mgi_number","mgi_symbol","description", "gene_biotype","gene_chr")) %>% 
+  select(-mgi_number, -description, -gene_biotype,-gene_chr) %>% 
+  left_join(all.genes)
+
+
 ```
 
 Here, I am contrasting global gene expression and eQTL mapping results between embryonic stem cells (ESCs) and neural progenitor cells (NPCs) derived from Diversity Outbred (DO) mice. We analyzed RNA-seq data from a total of `r nrow(expr.esc_rna)` ESC and `r nrow(expr.npc_rna)` NPC lines; 127 lines had RNA-seq data for both ESCs and NPCs. After filtering out genes with low expression and genes not expressed in at least half of the samples, we detect `r formatC(ncol(expr.esc_rna),big.mark = ",")` in ESCs and `r formatC(ncol(expr.npc_rna),big.mark = ",")` in NPCs, with `r formatC(length(shared.genes),big.mark = ",")` genes detected in both cell types. The filtered data was then normalized to the upper quartile value (each read count is divided by the 75th percentile of the read counts across samples) to allow for comparison of expression measures within and across cell-types. Both data-sets were generated in batches, and we used ComBat as implemented in the R package sva to correct for batch effects while controlling for the sexes of lines in each batch. Both ESC and NPC expression values were transformed to rank normal scores prior to eQTL mapping.
@@ -503,7 +509,23 @@ save( Dyrk1a_eqtl,
 ```
 
 
+```{r save_data_for_cibersort, eval=F}
 
+# load pekowska data
+load("/projects/munger-lab/projects/DO_mNPC/Pekowska2018_data/Pekowska2018_exp_counts.RData")
+
+gene_expr |> 
+  select(gene_id, ESC1, ESC2, NSC1, NSC2) |> 
+  filter( gene_id %in% colnames(expr.npc_rna)) |> 
+  write_tsv( file = here("_data","Pekowska_counts_for_cibersort.tsv"))
+
+expr.npc_rna |> 
+  t() |> 
+  as_tibble(rownames = "gene_id") |> 
+  filter(gene_id %in% gene_expr$gene_id) |>
+  write_tsv(file = here("_data","NPC_gene_counts_for_cibersort.tsv"))
+
+```
 
 
 

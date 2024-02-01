@@ -744,9 +744,16 @@ Below are the list of GO Biological processes that show significant differences 
 
 ```{r gsva_results_table}
 
-signif_results_tukey_rna %>%
+gsva_rna_tukey %>%
+  filter( Category %in% (signif_results_tukey_rna %>% filter( p.adj <= 0.01 , term %in% c("sex")))$Category ) %>%
+  filter( term == "sex") %>% 
+  rbind(
+    gsva_rna_tukey %>%
+      filter( Category %in% (signif_results_tukey_rna %>% filter( p.adj <= 0.01 , term %in% c("lifr_geno")))$Category ) %>%
+      filter( term == "lifr_geno") 
+  ) %>% 
   select(Effect= term, Category, TERM,group1, group2, estimate,p.adj) %>% 
-  filter( p.adj < 0.01) %>% 
+  #filter( p.adj < 0.01) %>% 
   distinct() %>% 
  mutate( "Adjusted p-value" = formatC(p.adj, digits=2, format ="e"),
           estimate= round(estimate,2)) %>% 
@@ -756,7 +763,7 @@ signif_results_tukey_rna %>%
 
 ```
 
-### QTL mapping with GSVA scores
+### QTL mapping with GSVA scores {.tabset .tabset-fade .tabset-pills}
 
 ```{r gsva_qtl_scans}
 
@@ -779,7 +786,7 @@ gsva_results_signif_mat_rankZ <- apply(gsva_results_signif_mat, 2,rankZ )
 # save( gsva_qtl, file = here("_data","GSVA_npc_qtl_scans.RData"))
 
 load(here("_data","GSVA_npc_qtl_scans.RData"))
-gsva_qtl_peaks <- find_peaks( gsva_qtl, threshold = 7, gmap)
+gsva_qtl_peaks <- find_peaks( gsva_qtl, threshold = 10, gmap)
 # add interp_peak_bp, before, after
 gsva_qtl_peaks <- gsva_qtl_peaks %>% 
   left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% 
@@ -796,10 +803,79 @@ gsva_qtl_peaks <- gsva_qtl_peaks %>%
 
 gsva_qtl_peaks %>% 
   select( GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
-  filter( GOID %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
-                                                           p.adj.signif != "ns" ))$Category ) %>%
+  # filter( GOID %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
+  #                                                          p.adj.signif != "ns" ))$Category ) %>%
+  filter(Lod > 7.5) %>% 
   mutate_if(is.numeric, round, 2) %>% 
   create_dt()
+
+```
+
+Looking closer at some of them:
+
+```{r}
+
+# GO:0001825 blastocyst formation	
+# within chr1 transband: chr 1 104-113Mb 
+# mRNA processing, cell cycle, mitotic chromosome condensation, regulation of double-strand break repair via homologous recombination, anaphase-promoting complex-dependent catabolic process, protein localization to kinetochore, positive regulation of DNA repair, cell division, DNA repair, chromosome condensation
+# within chr10 transband: chr10 33-40Mb
+# proteolysis, dephosphorylation, endoplasmic reticulum calcium ion homeostasis, neuron development,  
+# within chr11 transband: chr11 107-111Mb
+# negative regulation of protein processing
+
+gsva_qtl_highlight <- gsva_qtl_peaks %>% 
+  filter(
+    (chr == 1 & between(interp_bp_peak, 104e06, 113e06)) |
+    (chr == 10 & between(interp_bp_peak, 33e06, 40e06) ) |
+    (chr == 11 & between(interp_bp_peak, 107e06, 111e06) )
+  ) %>% 
+  filter(lod > 7)
+  # filter(
+  #   TERM %in% c("mRNA processing", "cell cycle", "mitotic chromosome condensation", "regulation of double-strand break repair via homologous recombination", "anaphase-promoting complex-dependent catabolic process", "protein localization to kinetochore", "positive regulation of DNA repair", "cell division", "DNA repair", "chromosome condensation",
+  #            "proteolysis", "dephosphorylation", "endoplasmic reticulum calcium ion homeostasis", "neuron development",
+  #            "negative regulation of protein processing"
+  #            ) 
+  #     
+  # )
+
+```
+
+```{r gsva_qtl_follow_up_plots}
+#| results: asis
+#| echo: false
+#| eval: true
+#| cache: true
+#| message: false
+#| fig-height: 6
+#| fig-width: 12
+
+haps <- LETTERS[1:8]
+
+for( i in 1:nrow(gsva_qtl_highlight)){
+  peak_chr <- gsva_qtl_highlight$peak_chr[i]
+  lodcolumn <- gsva_qtl_highlight$lodcolumn[i]
+  
+  #pQTL scan
+  qtl_scan <- scan1(genoprobs = probs.npc_rna,
+                 pheno = gsva_results_signif_mat_rankZ[,lodcolumn,drop = F],
+                 kinship = kinship_loco.npc_rna,
+                 addcovar = covar.npc_rna)
+  qtl_effs <- scan1blup(genoprobs =probs.npc_rna[,peak_chr],
+                   pheno = gsva_results_signif_mat_rankZ[,lodcolumn,drop = F],
+                   kinship = kinship_loco.npc_rna[[peak_chr]],
+                   addcovar = covar.npc_rna)
+  cat('#### ',gsva_qtl_highlight$TERM[i],'peak on', peak_chr ,' \n')
+  plot_coefCC(qtl_effs,
+                            pmap, 
+                            scan1_output = qtl_scan, 
+                            main=paste0(gsva_qtl_highlight$TERM[i]," plot"),
+              xlim = c(gsva_qtl_highlight$interp_bp_peak[i]-20e06, 
+                       gsva_qtl_highlight$interp_bp_peak[i]+20e06) )
+  abline(v=gsva_qtl_highlight$interp_bp_peak[i],col="red",lwd=2,lty=3)
+  cat(' \n \n')
+}
+
+
 
 ```
 

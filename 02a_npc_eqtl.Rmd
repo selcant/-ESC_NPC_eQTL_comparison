@@ -299,9 +299,9 @@ ggplot()+
 
 ## DO mNPC eQTL map integrated: Shared genes and only significant NPC eQTL 
 
-```{r esc_npc_qtl_map_updated, fig.width=8,fig.height=8, warning=FALSE, message=FALSE}
+```{r esc_npc_qtl_map_updated, fig.width=8,fig.height=11, warning=FALSE, message=FALSE}
 
-ggplot()+
+npc_eqtl_shared_plot <- ggplot()+
   geom_rect( data = chrom_segments, aes( xmin =start, xmax = end, ymin = 0, ymax = max(end), fill = type), 
              inherit.aes = FALSE, alpha = 0.2, show.legend = FALSE)+
   scale_fill_manual(values = c("dark gray","white"))+
@@ -328,6 +328,13 @@ ggplot()+
           panel.grid.major.y = element_blank())+
   scale_color_manual( name = "eQTL",values = c("NPC"=qtl.colors[["npc_rna"]],  "Shared"=qtl.colors[["shared"]]), labels = c("NPC","Shared"))
 
+
+
+npc_eqtl_shared_map_plot <- ggarrange( npc_eqtl_shared_plot, trans_band_plot, nrow = 2, heights = c(0.7, 0.3))
+
+#ggsave(npc_eqtl_shared_map_plot, filename = here("figures","npc_eqtl_shared_map.svg"), width = 8, height = 11, dpi = 300, units = "in")
+
+npc_eqtl_shared_map_plot
 ```
 
 ## Overlapping eQTL
@@ -336,7 +343,7 @@ ggplot()+
 
 # calculate allele effect correlations for overlapping qtl
 peaks.npc_rna.wesc.overlap %>% 
-  filter( lod.npc_rna > 7.5,  match =="shared") -> shared_eqtl
+  filter( lod.npc_rna >= 7.5,  match =="shared") -> shared_eqtl
 peaks.esc_rna.wEffs %>% 
   inner_join( ., shared_eqtl %>% 
                 select( ensembl_gene_id, peak_chr, lod.npc_rna)) %>% 
@@ -536,7 +543,7 @@ shared_eqtl_effs_cor_df %>%
   select(ensembl_gene_id, lod.npc_rna, peak_chr) -> shared.wo.corr
 
 peaks.npc_rna.wesc.overlap %>% 
-  filter( lod.npc_rna > 7.5, match =="npc_rna", local.npc_rna ==T, ensembl_gene_id %in% shared.genes) %>% 
+  filter( lod.npc_rna >= 7.5, match =="npc_rna", local.npc_rna ==T, ensembl_gene_id %in% shared.genes) %>% 
   rbind(
     peaks.npc_rna.wesc.overlap %>% 
       inner_join( shared.wo.corr) %>% 
@@ -545,7 +552,7 @@ peaks.npc_rna.wesc.overlap %>%
 
 
 peaks.npc_rna.wesc.overlap %>% 
-  filter( lod.npc_rna > 7.5, match =="npc_rna", local.npc_rna ==F, ensembl_gene_id %in% shared.genes) %>% 
+  filter( lod.npc_rna >= 7.5, match =="npc_rna", local.npc_rna ==F, ensembl_gene_id %in% shared.genes) %>% 
     rbind(
     peaks.npc_rna.wesc.overlap %>% 
       inner_join( shared.wo.corr) %>% 
@@ -661,7 +668,7 @@ unique_npc_distant_eqtl_TFs <- g.unique.dist$result %>%
 
 peaks.npc_rna.wesc.overlap %>% 
   filter(mgi_symbol %in% unique_npc_distant_eqtl_TFs$TF,
-         lod.npc_rna >7.5 | lod.esc_rna > 7.5) %>% 
+         lod.npc_rna >=7.5 | lod.esc_rna >= 7.5) %>% 
   select( ensembl_gene_id, mgi_symbol, peak_chr, gene_chr,match, lod.npc_rna, lod.esc_rna, interp_bp_peak.npc_rna, interp_bp_peak.esc_rna, local.npc_rna, local.esc_rna) %>% 
   mutate_if( is.numeric, round, 2) %>% 
   create_dt()
@@ -692,10 +699,24 @@ unique_npc_distant_eqtl_TF_genes %>%
           `# of TFs` = n_distinct(TF)) %>% 
   select( -TF) %>% distinct() %>% arrange(`# of TFs`)
 
-unique_npc_distant_eqtl %>% 
-  select(mgi_symbol) %>% 
-  distinct() %>% 
+# Looking to see if these TFs are best mediators for any of the distant eQTL
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    unique_npc_distant_eqtl %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 2) %>% 
+  filter( target.symbol != mediator.symbol) %>% 
+  filter( mediator.symbol %in% unique_npc_distant_eqtl_TF_genes$TF) %>% 
+  arrange( mediation.lod) %>% 
+  select( target.symbol, target.chr, target.lod,mediator.symbol, mediation.lod, mediator.lod,  type) %>% 
   create_dt()
+
+# nothing really worth following up here!
+
 
 ```
 
