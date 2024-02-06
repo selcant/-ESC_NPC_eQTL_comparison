@@ -1,0 +1,30 @@
+---
+title: "Genetic characterization of DO mNPC transcriptome"
+author: "Selcan Aydin"
+date: "`r Sys.Date()`"
+format: 
+  html:
+      embed-resources: true
+      standalone: true
+include-in-header:
+  - text: |
+      <style>
+      .panel-tabset > .nav-tabs,
+      .panel-tabset > .tab-content {
+        border: none;
+      }
+      </style>
+code-fold: true
+toc: true
+toc-depth: 5
+toc-expand: true
+editor: 
+  markdown: 
+    wrap: sentence
+---
+
+# Genetic architecture of the DO NPC transcriptome
+
+# Mediation analysis
+
+# Distant eQTL hotspots
