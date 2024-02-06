@@ -249,6 +249,35 @@ g.chr1$result %>%
 ```
 
 
+<!-- ```{r} -->
+<!-- library(tidytext) -->
+<!--  # tokenize -->
+<!-- tokens <- g.chr1$result |>  -->
+<!--   select(term_name) |>  -->
+<!--   unnest_tokens(term_name, term_name) |>  -->
+<!--   dplyr::count(term_name, sort = TRUE)|>  -->
+<!--   ungroup() |>  -->
+<!--   rename("word" = "term_name") -->
+<!-- data("stop_words") -->
+<!-- tokens_clean <- tokens %>% -->
+<!--   anti_join(stop_words) -->
+<!-- nums <- tokens_clean %>% filter(str_detect(word, "^[0-9]")) %>% select(word) %>% unique() -->
+
+<!-- tokens_clean <- tokens_clean %>%  -->
+<!--   anti_join(nums, by = "word") -->
+
+<!-- # remove any other words that snuck in there -->
+<!-- uni_sw <- data.frame(word = c("process","processing","complex", "regulation")) -->
+
+<!-- tokens_clean <- tokens_clean %>%  -->
+<!--   anti_join(uni_sw, by = "word") -->
+
+<!-- # plot the 50 most common words -->
+<!-- tokens_clean %>%  -->
+<!--   with(wordcloud::wordcloud(word, n, random.order = FALSE, max.words = 50)) -->
+<!-- ``` -->
+
+
 ```{r, fig.height=8, fig.width=12}
 
 # mRNA processing
@@ -301,7 +330,7 @@ p <- ggraph(g.chr1.all)+
   geom_edge_link0(col="gray", alpha=0.1)+
   geom_node_point(aes(col=lfc),size=5)+
   geom_node_text(aes(label = name), repel = TRUE )+
-  scale_color_viridis( limits = c(-4,4))+
+  scale_color_viridis( limits = c(-4,4),option = "turbo")+
   theme_classic(base_size=10)+
   theme(axis.line=element_blank(),axis.text.x=element_blank(),
           axis.text.y=element_blank(),axis.ticks=element_blank(),
@@ -327,7 +356,9 @@ Looking at expression change in genes identified in relation to spindle assembly
 # any category with spindle, segregation
 chr1_spindle_genes <- g.chr1$result %>% 
   filter( p_value <0.01) %>% 
-  filter( str_detect( term_name, "(?i)spindle") |
+  filter( str_detect( term_name, "(?i)repair") |
+            str_detect( term_name, "(?i)replication") |
+            str_detect( term_name, "(?i)spindle") |
             str_detect(term_name, "(?i)segregation")|
             str_detect(term_name, "(?i)chromatid") |
             str_detect(term_name, "(?i)kinetochore") |
@@ -360,6 +391,8 @@ ggraph(g.chr1.all)+
   labs(col="Log Fold Change in NPCs")
 
 ```
+
+
 
 ### NPC eQTL allele effects
 
@@ -621,7 +654,7 @@ p <- ggplot(results, aes(y = mediator.symbol, x = target)) +
     panel.grid.minor = element_blank(),
     panel.background = element_blank()
   ) +
-  xlab("Target pQTL")+
+  xlab("Target eQTL")+
   ylab("Mediator")
 p
 
@@ -635,8 +668,8 @@ Which eQTL are best mediated by *Pign* ESC expression?
 ```{r}
 
 chr1.meds.ranked %>% 
-  filter( rank == 1 & mediator.symbol =="Pign" & type =="esc") %>% 
-  select( 
+  filter( rank %in% c( 1,2) & mediator.symbol =="Pign" ) %>% 
+  select( type, rank,
     target.id, target.symbol, target.chr, target.lod, mediation.lod ) %>% 
   mutate_if(is.numeric, round, 2) %>% 
   create_dt()
@@ -654,16 +687,18 @@ chr1.meds.ranked %>%
 pign_eqtl <- peaks.npc_rna.wesc.overlap %>% 
   filter( lod.esc_rna >7.5, mgi_symbol =="Pign")
 
+kinship.shared.esc_rna <- calc_kinship(shared.probs.esc_rna, type = "loco")
+kinship.shared.npc_rna <- calc_kinship(shared.probs.npc_rna, type = "loco")
 # LOD plot
-pign_esc_scan <- scan1( pheno = exprZ.esc_rna[,pign_eqtl$ensembl_gene_id,drop=FALSE], 
-                    genoprobs = probs.esc_rna, 
-                    kinship = kinship_loco.esc_rna,
-                    addcovar = covar.esc_rna)
+pign_esc_scan <- scan1( pheno = exprZ.esc_rna[shared.samples,pign_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = shared.probs.esc_rna, 
+                    kinship = kinship.shared.esc_rna,
+                    addcovar = covar.esc_rna[shared.samples,])
 
-pign_npc_scan <- scan1( pheno = exprZ.npc_rna[,pign_eqtl$ensembl_gene_id,drop=FALSE], 
-                    genoprobs = probs.npc_rna, 
-                    kinship = kinship_loco.npc_rna,
-                    addcovar = covar.npc_rna)
+pign_npc_scan <- scan1( pheno = exprZ.npc_rna[shared.samples,pign_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = shared.probs.npc_rna, 
+                    kinship = kinship.shared.npc_rna,
+                    addcovar = covar.npc_rna[shared.samples,])
 
 
 pign_esc_scan %>% 
@@ -866,28 +901,99 @@ ggscatter( pign_expr,
 
 ```
 
-###########################HERE!!!####################################
-###########################HERE!!!####################################
-###########################HERE!!!####################################
-###########################HERE!!!####################################
-###########################HERE!!!####################################
-
 Correlation of **Pign** expression to the target genes it is mediating:
 
-```{r pign_cor_to_target}
+```{r pign_cor_to_target_prep, warning=FALSE,message=FALSE}
 
+pign_med_genes <- chr1.meds.ranked %>% 
+  filter( rank == 1 & mediator.symbol =="Pign" & type =="esc") |> 
+  arrange( desc(lod_drop)) |> 
+  head( n = 20)
+
+pign_med_genes_expr <- as_tibble( expr.esc_rna[shared.samples, unique(pign_med_genes$target.id)], rownames = "sampleid") |> 
+  pivot_longer(2:(nrow(pign_med_genes)+1), names_to = "ensembl_gene_id", values_to = "esc") |> 
+  left_join(
+    as_tibble( expr.npc_rna[shared.samples, unique(pign_med_genes$target.id)], rownames ="sampleid") |> 
+  pivot_longer(2:(nrow(pign_med_genes)+1), names_to = "ensembl_gene_id", values_to = "npc")
+  ) |> 
+  left_join(
+    as_tibble( exprZ.npc_rna[shared.samples, unique(pign_med_genes$target.id)], rownames ="sampleid") |> 
+  pivot_longer(2:(nrow(pign_med_genes)+1), names_to = "ensembl_gene_id", values_to = "npc_rankz")
+  ) |> 
+  left_join(
+    as_tibble( exprZ.esc_rna[shared.samples, unique(pign_med_genes$target.id)], rownames ="sampleid") |> 
+  pivot_longer(2:(nrow(pign_med_genes)+1), names_to = "ensembl_gene_id", values_to = "esc_rankz")
+  ) |> 
+  full_join(
+    pign_expr |> select(sampleid = sample, pign_esc = esc, pign_npc= npc, pign_esc_rankz = esc_rankz, pign_npc_rankz = npc_rankz)  
+  ) |> 
+  left_join( all.genes_v91)
+```
+
+```{r pign_esc_cor_to_npc_expr, fig.height=15, fig.width=16}
+  
+ggscatter( pign_med_genes_expr,
+           x = "pign_esc_rankz",
+           y = "npc_rankz",
+           size = 3, 
+           alpha = 0.6,
+           add = "reg.line", # Add regression line
+           conf.int = TRUE, # Add confidence interval
+           add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE,
+           facet.by = "mgi_symbol"
+) +
+  stat_cor(method = "spearman") + # Add correlation coefficient
+  xlab("Pign ESC expression (rankZ)") +
+  ylab("NPC gene expression (rankZ)") +
+  theme_pubclean(base_size = 14)
 
 
 
 ```
 
 
-###########################HERE!!!####################################
-###########################HERE!!!####################################
-###########################HERE!!!####################################
-###########################HERE!!!####################################
-###########################HERE!!!####################################
-###########################HERE!!!####################################
+```{r pign_npc_cor_to_npc_expr, fig.height=15, fig.width=16}
+  
+ggscatter( pign_med_genes_expr,
+           x = "pign_npc_rankz",
+           y = "npc_rankz",
+           size = 3, 
+           alpha = 0.6,
+           add = "reg.line", # Add regression line
+           conf.int = TRUE, # Add confidence interval
+           add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE,
+           facet.by = "mgi_symbol"
+) +
+  stat_cor(method = "spearman") + # Add correlation coefficient
+  xlab("Pign NPC expression (rankZ)") +
+  ylab("NPC gene expression (rankZ)") +
+  theme_pubclean(base_size = 14)
+
+
+
+```
+
+```{r pign_esc_cor_to_esc_expr, fig.height=15, fig.width=16}
+  
+ggscatter( pign_med_genes_expr,
+           x = "pign_esc_rankz",
+           y = "esc_rankz",
+           size = 3, 
+           alpha = 0.6,
+           add = "reg.line", # Add regression line
+           conf.int = TRUE, # Add confidence interval
+           add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE,
+           facet.by = "mgi_symbol"
+) +
+  stat_cor(method = "spearman") + # Add correlation coefficient
+  xlab("Pign ESC expression (rankZ)") +
+  ylab("ESC gene expression (rankZ)") +
+  theme_pubclean(base_size = 14)
+
+
+
+```
+
 
 ### bmediatR results for Pign
 
@@ -1325,7 +1431,7 @@ p <- ggplot(results, aes(y = mediator.symbol, x = target)) +
     panel.grid.minor = element_blank(),
     panel.background = element_blank()
   ) +
-  xlab("Target pQTL")+
+  xlab("Target eQTL")+
   ylab("Mediator")
 p
 
@@ -1675,7 +1781,7 @@ p <- ggplot(results, aes(y = mediator.symbol, x = target)) +
     panel.grid.minor = element_blank(),
     panel.background = element_blank()
   ) +
-  xlab("Target pQTL")+
+  xlab("Target eQTL")+
   ylab("Mediator")
 p
 
@@ -1816,7 +1922,7 @@ p <- ggplot(results, aes(y = mediator, x = target)) +
     panel.grid.minor = element_blank(),
     panel.background = element_blank()
   ) +
-  xlab("Target pQTL")+
+  xlab("Target eQTL")+
   ylab("Mediator")
 p
 
