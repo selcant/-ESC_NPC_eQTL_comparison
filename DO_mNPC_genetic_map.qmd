@@ -23,8 +23,4993 @@ editor:
     wrap: sentence
 ---
 
+```{r setup}
+#| warning: false
+#| message: false
+
+
+options(stringsAsFactors = F)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_knit$set(progress=FALSE)
+
+# qtl mapping + mediation
+library(intermediate) # https://github.com/simecek/intermediate
+library(qtl2) 
+library(bmediatR) # https://github.com/wesleycrouse/bmediatR
+
+# # plotting
+library(ggpubr)
+library(igraph)
+library(ggraph)
+library(pheatmap)
+library(cowplot)
+library(GGally)
+library(corrplot)
+library(eulerr) 
+
+# annotations + general genomic things
+#library(biomaRt)
+library(GenomicRanges)
+
+# analysis
+library(Hmisc) # rcorr
+library(gprofiler2)
+# set gprofiler version
+set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e107_eg54_p17/")
+
+library(sva)
+library(WebGestaltR)
+library(WGCNA)
+library(GSVA)
+library(GO.db)
+library(rstatix)
+
+#data handling and display
+library(DT)
+library(readxl)
+library(tidyverse)
+select <- dplyr::select # I am adding this explicitly
+rename <- dplyr::rename # I am adding this explicitly
+
+# setting path
+library(here)
+
+# Making downloadable data tables
+# https://www.r-bloggers.com/vignette-downloadable-tables-in-rmarkdown-with-the-dt-package/
+create_dt <- function(x){
+  DT::datatable(x,
+                extensions = 'Buttons',
+                rownames = FALSE, 
+                filter="top",
+                options = list(dom = 'Blfrtip',
+                               buttons = c('copy', 'csv', 'excel'),
+                               pageLength = 5, 
+                               scrollX= TRUE
+                               ))
+  
+}
+
+# Running mediation locally for transbands
+do_global_mediation <- function(gene.name,p.chr, peak.info, probs, expr.target, expr.mediator, covar, med.type, genes){
+  
+  gene <- filter(peak.info, mgi_symbol==gene.name & peak_chr==p.chr)[1,]
+  if(dim(gene)[1] >1){ print("check the peaks!")}
+  
+  if(med.type=="n-n"){ # npc mediation to npc target
+    meds <- genes 
+    meds <- meds[meds$ensembl_gene_id %in% colnames(expr.mediator),]    
+    mediator <- expr.mediator[ ,meds$ensembl_gene_id, drop=FALSE ]
+    target   <- expr.target[ ,gene$ensembl_gene_id,drop=FALSE ]
+    marker   <- map_dat2 %>% filter(pos_cM == gene$peak_cM.npc_rna)
+   }
+  
+  if(med.type=="e-n"){ # esc mediation to npc target
+    meds <- genes 
+    meds <- meds[meds$ensembl_gene_id %in% colnames(expr.mediator),]    
+    mediator <- expr.mediator[ ,meds$ensembl_gene_id, drop=FALSE ]
+    target   <- expr.target[ ,gene$ensembl_gene_id,drop=FALSE ]
+    marker   <- map_dat2 %>% filter(pos_cM == gene$peak_cM.npc_rna)
+  }
+  if(med.type=="e-e"){ # esc mediation to esc target
+    meds <- genes
+    meds <- meds[meds$ensembl_gene_id %in% colnames(expr.mediator),]
+    mediator <- expr.mediator[ ,meds$ensembl_gene_id, drop=FALSE ]
+    target   <- expr.target[ ,gene$ensembl_gene_id,drop=FALSE ]
+    marker   <- map_dat2 %>% filter(pos_cM == gene$peak_cM.esc_rna)
+  }
+  if(med.type=="n-e"){ # npc mediation to esc target
+    meds <- genes
+    meds <- meds[meds$ensembl_gene_id %in% colnames(expr.mediator),]
+    mediator <- expr.mediator[ ,meds$ensembl_gene_id, drop=FALSE ]
+    target   <- expr.target[ ,gene$ensembl_gene_id,drop=FALSE ]
+    marker   <- map_dat2 %>% filter(pos_cM == gene$peak_cM.esc_rna)
+  }
+  
+  
+  annot    <- meds %>% mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2)
+  geno     <- pull_genoprobpos(probs,marker$marker)
+
+  med.scan <- mediation.scan(target= target,
+                            mediator = mediator,
+                            annotation = annot,
+                            covar =  covar,
+                            qtl.geno = geno, verbose=FALSE) 
+  med.scan <- med.scan %>% 
+    select(-chr) %>% 
+    mutate(target   = gene.name,
+           peak_chr = p.chr) %>% 
+    left_join(.,all.genes) %>% 
+    rename("mediator"="mgi_symbol")
+  return(med.scan)
+}
+
+
+interp_bp <- function(df) {
+  chroms <- c(as.character(1:19), "X")
+  df <- arrange(df, peak_chr, peak_cM)
+  peak_gpos <- select(df, peak_chr, peak_cM)
+  chr <- peak_gpos$peak_chr
+  f <- factor(chr, chroms)
+  peak_gcoord_list <- split(peak_gpos$peak_cM, f)
+  peak_pcoord_list <- qtl2::interp_map(peak_gcoord_list, gmap, pmap)
+  df$interp_bp_peak <- unsplit(peak_pcoord_list, f)
+  df
+}
+
+
+rankZ <- function (x) {
+  x <- rank(x, na.last = "keep", ties.method = "average")/(sum(!is.na(x)) + 1)
+  qnorm(x)
+}
+```
+
+```{r load_data}
+#| warning: false
+#| message: false
+
+# Note: I am keeping v91 ids + annotations for these two data sets. I am not going to add the protein data to these so I think it is okay. 
+
+# The mediations with ESC/NPC transcript were done for all NPC eQTL lod >6 using annotations from v84 ensembl ids and Duy's script that adds LOD at the peak, causality test. I am not using the causality test to filter anything but I do use lod drop z-threshold (z< -4) and positional threshold (diff < 10Mb) for filtering.
+
+# I am re-writing the overlap script for ESC/NPC eQTL without the ESC pQTL and will add allele effect correlations to it too . 
+
+all.genes_v91 <- read_tsv( file = here("_data","/ENSMUSGid_to_symbol_v91.txt")) %>% 
+  rename( ensembl_gene_id = `Gene stable ID`,
+          gene_start = `Gene start (bp)`, 
+          gene_end = `Gene end (bp)`, 
+          gene_chr = `Chromosome/scaffold name`,
+          gene_biotype = `Gene type`, 
+          mgi_symbol = `MGI symbol`) %>% 
+  mutate( midpoint = (gene_start+gene_end)/2)
+
+# ESC expression
+load(here("_data/DO_mESC_paired_eQTL_forMapping.RData"))
+raw.expr.esc_rna <- esc.raw.expr
+exprZ.esc_rna <- esc.exprZ
+kinship_loco.esc_rna <- esc.kinship_loco
+probs.esc_rna <- esc.probs
+covar.esc_rna <- esc.covar
+covarTidy.esc_rna <- covarTidy
+exprComBat.esc_rna <- esc.expr.ComBat
+expr.esc_rna <- expm1(exprComBat.esc_rna) # re-transforming since the data was log(x+1) before combat
+expr.esc_rna[expr.esc_rna < 0] <- 0
+expr.esc_rna <- t(expr.esc_rna)
+rm(esc.expr, esc.exprZ, esc.kinship_loco, esc.probs, esc.expr.ComBat, esc.raw.expr, covarTidy, exprComBat.esc_rna, esc.covar, esc.covarTidy)
+
+# NPC expression
+load(here("_data/DO_mNPC_paired_eQTL_forMapping.RData"))
+raw.expr.npc_rna <- npc.raw.expr
+exprZ.npc_rna <- npc.exprZ
+kinship_loco.npc_rna <- npc.kinship_loco
+probs.npc_rna <- npc.probs
+covar.npc_rna <- npc.covar
+covarTidy.npc_rna <- npc.covarTidy
+exprComBat.npc_rna <- npc.expr.ComBat
+expr.npc_rna <- expm1(exprComBat.npc_rna) # re-transforming since the data was log(x+1) before combat
+expr.npc_rna[expr.npc_rna < 0] <- 0
+expr.npc_rna <- t(expr.npc_rna)
+rm(npc.expr, npc.exprZ, npc.kinship_loco, npc.probs, npc.expr.ComBat, npc.raw.expr, exprComBat.npc_rna, npc.covar, npc.covarTidy)
+
+# Get v84 gene annotations
+# all.genes_v84 <- ensimplR::batchGenes( ids = union(colnames(expr.esc_rna), colnames(expr.npc_rna)), species = 'Mm', release = 84) 
+# # Let's save these so I don't have to depend on ensimplR every time
+# write_tsv(all.genes_v84, file = here("_data","ENSMUSGid_to_symbol_v84.txt"))
+all.genes_v84 <- read_tsv( here("_data","ENSMUSGid_to_symbol_v84.txt"))
+all.genes_v84 <- all.genes_v84 %>% 
+  mutate( midpoint = (gene_start+gene_end)/2) %>% 
+  # add gene_biotype
+  left_join( all.genes_v91 %>%  select(ensembl_gene_id, gene_biotype))
+
+# ESC eQTL map + effects
+load(here("_data/ESC_eQTL_effects.RData"))
+peaks.esc_rna <- peaks
+effects_blup.esc_rna <- effects_blup
+effects_std.esc_rna <- effects_std
+rm(peaks, effects_blup, effects_std)
+
+# Adding effects to eQTL peaks
+peaks.esc_rna.blup <- cbind(peaks.esc_rna, effects_blup.esc_rna) %>%
+  dplyr::rename("ensembl_gene_id" = "phenotype")
+colnames(peaks.esc_rna.blup) <- c(
+  colnames(peaks.esc_rna.blup)[1:2],
+  paste0(colnames(peaks.esc_rna.blup)[3:dim(peaks.esc_rna.blup)[2]], ".esc_rna")
+)
+
+# adding annotations to eQTL peaks with effects
+peaks.esc_rna.wEffs <- peaks.esc_rna.blup %>% 
+  left_join( all.genes_v84) %>% 
+  mutate(midpoint = (gene_start + gene_end) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == gene_chr),
+          diff = abs(midpoint - interp_bp_peak.esc_rna)) %>% 
+  mutate( local.esc_rna = ifelse( same_chrom & 
+                            diff < 10e06, TRUE, FALSE
+    ))%>% 
+  select(-same_chrom, -diff)
+
+
+# NPC eQTL map + effects
+load(here("_data/NPC_eQTL_effects.RData"))
+peaks.npc_rna <- peaks
+effects_blup.npc_rna <- effects_blup
+effects_std.npc_rna <- effects_std
+rm(peaks, effects_blup, effects_std)
+
+# Adding effects to eQTL peaks
+peaks.npc_rna.blup <- cbind(peaks.npc_rna, effects_blup.npc_rna) %>%
+  dplyr::rename("ensembl_gene_id" = "phenotype")
+colnames(peaks.npc_rna.blup) <- c(
+  colnames(peaks.npc_rna.blup)[1:2],
+  paste0(colnames(peaks.npc_rna.blup)[3:dim(peaks.npc_rna.blup)[2]], ".npc_rna")
+)
+
+# adding annotations to eQTL peaks with effects
+peaks.npc_rna.wEffs <- peaks.npc_rna.blup %>% 
+  left_join( all.genes_v84) %>% 
+  mutate(midpoint = (gene_start + gene_end) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == gene_chr),
+          diff = abs(midpoint - interp_bp_peak.npc_rna)) %>% 
+  mutate( local.npc_rna = ifelse( same_chrom & 
+                            diff < 10e06, TRUE, FALSE
+    )) %>% 
+  select(-same_chrom, -diff)
+
+
+# get all genes that contain the union of both data sets + esc/npc gene lists.
+all.genes <- filter(all.genes_v84, ensembl_gene_id %in% c(colnames(exprZ.esc_rna), colnames(exprZ.npc_rna)) )
+esc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.esc_rna)) # note that we are missing annotations for 19 ids, ensembl say they are deprecated.
+npc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.npc_rna)) 
+
+
+## shared data
+# get the set of shared genes
+shared.genes <- intersect(colnames(expr.esc_rna),colnames(expr.npc_rna))
+
+# get the set of shared samples
+shared.samples <- intersect(rownames(expr.esc_rna)[!grepl("repB",rownames(expr.esc_rna))],
+                            rownames(expr.npc_rna)[!grepl("repB",rownames(expr.npc_rna))])
+
+# let's subset the expression matrices for shared genes + samples 
+shared.expr.npc_rna <- expr.npc_rna[shared.samples,shared.genes ]
+shared.expr.esc_rna  <- expr.esc_rna[shared.samples,shared.genes]
+
+# let's subset the probs matrices
+shared.probs.esc_rna <- probs.esc_rna[ ind=shared.samples]
+shared.probs.npc_rna <- probs.npc_rna[ind=shared.samples]
+
+## merged peaks
+# ESC/NPC eQTL overlap
+load(here("_data","peaks_comparison_10Mb_ESC_NPC_v2.RData")) # peaks.esc.npc.rna
+
+# there are some significant NPC eQTL that should be shared but is not. See below, might be worth fixing those.
+# peaks.esc.npc.rna %>% 
+#   filter( lod.esc_rna > 5 & lod.npc_rna >7.5 & match != "shared" & abs(interp_bp_peak.esc_rna-interp_bp_peak.npc_rna) < 10e6)
+
+## mediation results
+load(here("_data","DO_mNPC_eQTL_NPC_RNA_mediation_lod6_merged.RData")) ## eqtl_npc_rna_meds
+load(here("_data","DO_mNPC_eQTL_ESC_RNA_mediation_lod6_merged.RData")) ## eqtl_esc_rna_meds
+
+## adding cc_variants for association mapping
+query_variants <- create_variant_query_func(here("_data/cc_variants.sqlite"))
+query_genes <- create_gene_query_func("_data/mouse_genes_mgi.sqlite")
+
+
+# prep some stuff for plotting:
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>% group_by(chr) %>%
+  summarize(len=max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens/2
+
+# qtl colors
+qtl.colors <- c( esc_rna = "#009E73", 
+                 npc_rna = "#D55E00",
+                 shared = "#7570B3")
+# founder colors
+founder_colors <- c(AJ = "#F0E442", B6 = "#555555", `129` = "#E69F00", NOD = "#0072B2",
+   NZO = "#56B4E9", CAST = "#009E73", PWK = "#D55E00", WSB = "#CC79A7")
+
+# lifr genotypes
+# get_LIFR_genotypes
+# using Dan's code to get LIFR genotypes for the full list of animals
+probs <- probs.npc_rna
+markers <- tibble(name = dimnames(probs[[15]])[[3]]) %>%
+  mutate(name2 = name) %>%
+  separate(name2, into = c("chrom", "pos"), sep = "_", convert = TRUE)
+
+# LIFr SNP is chr15:7116944 (rs50454566)
+mm <- filter(markers, chrom == "15", pos > 7090000, pos < 7130000) # 3 markers
+probs2 <- probs$`15`[, , mm$name]
+
+closest_geno <- function(p, tol = 0.01) {
+  if (sum(abs(p - c(1, 0))) < tol) {
+    return("A")
+  }
+  if (sum(abs(p - c(0, 1))) < tol) {
+    return("B")
+  }
+  if (sum(abs(p - c(0.5, 0.5))) < tol) {
+    return("H")
+  }
+  return(NA)
+}
+call_geno <- function(mat) {
+  # mat is nsamp*8 (haps)
+  # A = A_J
+  # B = B6
+  # C = 129
+  # D = NOD
+  # E = NZO
+  # F = CAST
+  # G = PWK
+  # H = WSB
+  # I want to divide NOD + CAST + PWK + WSB
+  # vs. the other four
+  grp <- c("A", "A", "A", "B", "A", "B", "B", "B")
+  collapsed <- apply(mat, 1, function(x) tapply(x, grp, sum))
+  apply(collapsed, 2, closest_geno)
+}
+
+probs3 <- apply(probs2, 3, call_geno)
+# assert_that(noNA(probs3))
+one <- probs3[, 1] # marker left of Lifr
+two <- probs3[, 2] # closest marker to Lifr
+three <- probs3[, 3] # marker right of Lifr
+# "PB360.49" has an ancestry switch between markers 1 & 2!
+
+
+# Get samples in group A (inbred strains) and group B (wild-derived + NOD)
+inbred <- rownames(probs[[1]])[one == "A" & two == "A" & three == "A"]
+wildder <- rownames(probs[[1]])[one == "B" & two == "B" & three == "B"]
+hets <- rownames(probs[[1]])[one == "H" & two == "H" & three == "H"]
+# cat(inbred, sep="\n", file="lifr_genotype_inbred.txt")
+# cat(wildder, sep="\n", file="lifr_genotype_wildder.txt")
+# cat(hets, sep="\n", file="lifr_genotype_het.txt")
+#
+data_frame(
+  lifr_geno = factor(c(rep("Ref", length(inbred)), c(rep("Alt", length(wildder))), c(rep("Het", length(hets))))),
+  lifr = factor(c(rep(0, length(inbred)), c(rep(1, length(wildder))), c(rep(2, length(hets))))),
+  rowname = c((inbred), (wildder), (hets))
+) %>%
+  mutate(rowname = ifelse(is.na(rowname), "PB360.49_repA", rowname)) -> covar.lifr
+
+covarTidy.npc_rna %>% 
+  left_join( covar.lifr, by = c("sampleid"="rowname")) -> covarTidy.npc_rna
+
+
+#read in mitotic spindle assembly genes, go term 
+sac_genes <- read_tsv(here("_data","mitotic_sac_genes.tsv"), col_names = c("mgi_number","mgi_symbol","description", "gene_biotype","gene_chr")) %>% 
+  select(-mgi_number, -description, -gene_biotype,-gene_chr) %>% 
+  left_join(all.genes)
+
+
+```
+
+Here, I am contrasting global gene expression and eQTL mapping results between embryonic stem cells (ESCs) and neural progenitor cells (NPCs) derived from Diversity Outbred (DO) mice. We analyzed RNA-seq data from a total of `r nrow(expr.esc_rna)` ESC and `r nrow(expr.npc_rna)` NPC lines; 127 lines had RNA-seq data for both ESCs and NPCs. After filtering out genes with low expression and genes not expressed in at least half of the samples, we detect `r formatC(ncol(expr.esc_rna),big.mark = ",")` in ESCs and `r formatC(ncol(expr.npc_rna),big.mark = ",")` in NPCs, with `r formatC(length(shared.genes),big.mark = ",")` genes detected in both cell types. The filtered data was then normalized to the upper quartile value (each read count is divided by the 75th percentile of the read counts across samples) to allow for comparison of expression measures within and across cell-types. Both data-sets were generated in batches, and we used ComBat as implemented in the R package sva to correct for batch effects while controlling for the sexes of lines in each batch. Both ESC and NPC expression values were transformed to rank normal scores prior to eQTL mapping.
+
+
+In this notebook, I am presenting the genetic mapping and mediation results with DO mNPC transcripts. First, I calculate the heritability of each transcript in DO mNPCs and present the DO mNPC eQTL map. Next, I integrate the DO mNPC eQTL map with the mESC eQTL map and compare the allele effects of overlapping eQTL. Mediation analysis results are summarized in two notebooks where the first one is summarizing the full mediation results focusing on local and distant eQTL with best mediators being ESC or NPC transcripts. Second notebook describes the DO mNPC eQTL hotspots, their characterization and mediation. 
+
 # Genetic architecture of the DO NPC transcriptome
+
+```{r calc_herit}
+#| warning: false
+#| message: false
+
+# calculate heritability
+kinship.npc_rna <- calc_kinship( probs.npc_rna)
+npc_herit <-  est_herit(
+  pheno = exprZ.npc_rna,
+  kinship = kinship.npc_rna, 
+  addcovar = covar.npc_rna
+)
+
+kinship.esc_rna <- calc_kinship( probs.esc_rna)
+esc_herit <- est_herit(
+  pheno = exprZ.esc_rna,
+  kinship = kinship.esc_rna,
+  addcovar = covar.esc_rna
+)
+
+```
+
+
+Out of `r formatC(ncol(exprZ.npc_rna), big.mark =",")` transcripts, `r npc_herit %>% as_tibble(rownames= "ensembl_gene_id") %>% filter(value >0) %>% nrow()` has non-zero heritability and the median heritability is `r round((npc_herit %>% as_tibble(rownames= "ensembl_gene_id") %>% summarize( mean = median(value)))$mean,2)`. We mapped `r formatC((peaks.npc_rna %>% filter(lod >7.5) %>% nrow()),big.mark=",")` eQTL peaks from `r formatC((peaks.npc_rna %>% filter(lod >7.5) %>% select(phenotype) %>% distinct() %>% nrow()),big.mark=",")` unique genes in NPCs with a lod score above 7.5 where `r formatC((peaks.npc_rna.wEffs %>% filter(lod.npc_rna >7.5, local.npc_rna ==T) %>% nrow()),big.mark=",")` are local and `r formatC((peaks.npc_rna.wEffs %>% filter(lod.npc_rna >7.5, local.npc_rna ==F) %>% nrow()),big.mark=",")` are distant. Distant pQTL form hotspots on chromosomes 1, 10 and 11.
+
+## Heritability of transcript abundance in DO mNPCs
+
+```{r heritability_npc_rna}
+#| warning: false
+#| message: false
+#| fig-width: 6
+#| fig-height: 4
+
+# plot heritability histogram
+npc_herit %>%
+  as_tibble(rownames= "ensembl_gene_id") %>%
+  left_join( all.genes) %>%
+  ggplot()+
+  aes(
+    x = value
+    )+
+  geom_histogram( alpha = 0.6, binwidth  = 0.01)+
+  theme_pubclean(base_size = 14)+
+  ylab("") +
+  xlab("Heritability of transcript abundance in DO mNPCs")
+
+```
+
+## DO mNPC eQTL map
+
+Using +/- 10Mb for classifying local/distant eQTL.
+
+```{r npc_eqtl_map_prep}
+#| warning: false
+#| message: false
+
+# eQTL map for NPC rna
+# prep the objects
+#map_dat2 <- map_dat2 %>% mutate(pos_bp = as.numeric(pos_bp), pos_cM = as.numeric(pos))
+map_dat2$chromF <- factor(map_dat2$chrom, levels = c(as.character(1:19), "X"))
+chrom_markers <- select(map_dat2, chromF, n) %>%
+  rename(chrom = chromF) %>%
+  group_by(chrom) %>%
+  summarize(start = min(n), end = max(n)) %>%
+  GenomicRanges::GRanges()
+windows <- unlist(GenomicRanges::slidingWindows(chrom_markers, width = 50, step = 10))
+markers_bynum <- select(map_dat2, chrom, n) %>%
+  dplyr::rename(start = n) %>%
+  mutate(end = start) %>%
+  GenomicRanges::GRanges()
+
+distant_esc_rna <- filter(peaks.esc_rna.wEffs, lod.esc_rna > 7.5, !is.na(local.esc_rna) & !(local.esc_rna)) %>%
+  select(peak_chr, interp_bp_peak.esc_rna) %>%
+  dplyr::rename(chrom = peak_chr, end = interp_bp_peak.esc_rna) %>%
+  mutate(start = end) %>%
+  GenomicRanges::GRanges()
+distant_esc_rna_lod6 <- filter(peaks.esc_rna.wEffs, lod.esc_rna > 6, !is.na(local.esc_rna) & !(local.esc_rna)) %>%
+  select(peak_chr, interp_bp_peak.esc_rna) %>%
+  dplyr::rename(chrom = peak_chr, end = interp_bp_peak.esc_rna) %>%
+  mutate(start = end) %>%
+  GenomicRanges::GRanges()
+
+distant_npc_rna <- filter(peaks.npc_rna.wEffs, lod.npc_rna > 7.5, !is.na(local.npc_rna) & !(local.npc_rna)) %>%
+  select(peak_chr, interp_bp_peak.npc_rna) %>%
+  dplyr::rename(chrom = peak_chr, end = interp_bp_peak.npc_rna) %>%
+  mutate(start = end) %>%
+  GenomicRanges::GRanges()
+distant_npc_rna_lod6 <- filter(peaks.npc_rna.wEffs, lod.npc_rna > 6, !is.na(local.npc_rna) & !(local.npc_rna)) %>%
+  select(peak_chr, interp_bp_peak.npc_rna) %>%
+  dplyr::rename(chrom = peak_chr, end = interp_bp_peak.npc_rna) %>%
+  mutate(start = end) %>%
+  GenomicRanges::GRanges()
+
+markers <- select(map_dat2, chrom, pos_bp) %>%
+  dplyr::rename(start = pos_bp) %>%
+  mutate(end = start) %>%
+  GenomicRanges::GRanges() # length 69,005
+esc_hotspot <- GenomicRanges::nearest(distant_esc_rna, markers)
+esc_hotspot_lod6 <- GenomicRanges::nearest(distant_esc_rna_lod6, markers)
+npc_hotspot <- GenomicRanges::nearest(distant_npc_rna, markers)
+npc_hotspot_lod6 <- GenomicRanges::nearest(distant_npc_rna_lod6, markers)
+# assert_that(noNA(x), noNA(y))
+# assert_that(noNA(x))
+windows$distant_esc_rna <- GenomicRanges::countOverlaps(windows, markers_bynum[esc_hotspot])
+windows$distant_esc_rna <- GenomicRanges::countOverlaps(windows, markers_bynum[esc_hotspot_lod6])
+windows$distant_npc_rna <- GenomicRanges::countOverlaps(windows, markers_bynum[npc_hotspot])
+windows$distant_npc_rna_lod6 <- GenomicRanges::countOverlaps(windows, markers_bynum[npc_hotspot_lod6])
+window_counts <- tibble(
+  chrom = as.character(GenomicRanges::seqnames(windows)),
+  start = GenomicRanges::start(windows),
+  end = GenomicRanges::end(windows),
+  distant_esc_rna = windows$distant_esc_rna, 
+  distant_npc_rna = windows$distant_npc_rna,
+  distant_npc_rna_lod6 = windows$distant_npc_rna_lod6
+)
+
+# plotting
+map_dat2 <- map_dat2 %>% mutate( pos_cM = as.numeric(pos))
+mm <- match(window_counts$start, map_dat2$n)
+m2 <- match(window_counts$end, map_dat2$n)
+window_counts$pos_cM_start <- map_dat2$pos_cM[mm]
+window_counts$pos_bp_start <- map_dat2$pos_bp[mm]
+window_counts$pos_cM_end <- map_dat2$pos_cM[m2]
+window_counts$pos_bp_end <- map_dat2$pos_bp[m2]
+window_counts <- window_counts %>%
+  mutate(midpoint = (pos_cM_end + pos_cM_start) / 2, 4)
+
+x <- select(window_counts, chrom, starts_with("pos_bp"), starts_with("distant")) %>%
+  filter(
+    #distant_esc_rna > quantile(distant_esc_rna,0.995) | 
+    #distant_npc_rna_lod6 > quantile(distant_npc_rna_lod6, 0.995) | 
+           distant_npc_rna > quantile(distant_npc_rna,0.995) )
+bands.esc.npc.rna <- x %>%
+  rename(start = pos_bp_start, end = pos_bp_end) %>%
+  GenomicRanges::GRanges() %>%
+  GenomicRanges::reduce()
+# reduce collapses overlapping windows into one big window. Works perfectly here.
+bands.esc.npc.rna$distant_esc_rna <- GenomicRanges::countOverlaps(bands.esc.npc.rna, distant_esc_rna)
+bands.esc.npc.rna$distant_esc_rna_lod6<- GenomicRanges::countOverlaps(bands.esc.npc.rna, distant_esc_rna_lod6)
+bands.esc.npc.rna$distant_npc_rna <- GenomicRanges::countOverlaps(bands.esc.npc.rna, distant_npc_rna)
+bands.esc.npc.rna$distant_npc_rna_lod6 <- GenomicRanges::countOverlaps(bands.esc.npc.rna, distant_npc_rna_lod6)
+
+```
+
+```{r npc_eqtl_map}
+#| warning: false
+#| message: false
+#| fig-width: 8
+#| fig-height: 11
+
+
+peaks.npc_rna.wEffs$cumsum_bp_peak <- peaks.npc_rna.wEffs$interp_bp_peak + chrom_lens_offset[peaks.npc_rna.wEffs$peak_chr]
+peaks.npc_rna.wEffs$cumsum_bp_gene <- peaks.npc_rna.wEffs$midpoint + chrom_lens_offset[peaks.npc_rna.wEffs$gene_chr]
+
+chroms <-names(chrom_lens)
+chrom_segments <- tibble( start = 0, 
+                          end = chrom_lens,
+                          chr = chroms,
+                          type = as.character(rep(c(0,1),10)))
+chrom_segments$start <- chrom_segments$start+ chrom_lens_offset[chrom_segments$chr]
+chrom_segments$end <- chrom_segments$end+ chrom_lens_offset[chrom_segments$chr]
+
+ggplot()+
+  geom_rect( data = chrom_segments, aes( xmin =start, xmax = end, ymin = 0, ymax = max(end), fill = type), 
+             inherit.aes = FALSE, alpha = 0.2, show.legend = FALSE)+
+  scale_fill_manual(values = c("dark gray","white"))+
+  geom_point(data = peaks.npc_rna.wEffs %>% 
+            filter( lod.npc_rna > 7.5), 
+            aes( x = cumsum_bp_peak, y = cumsum_bp_gene),
+            size = 2, 
+            col =qtl.colors[["npc_rna"]],
+             inherit.aes = FALSE )+
+  theme_pubclean(base_size = 16)+
+  scale_x_discrete( name = "eQTL peak",
+                    limits = chrom_lens_midpt, 
+                    labels = names(chrom_lens), 
+                    expand = expansion( mult = 0.02))+
+  scale_y_discrete( name = "Gene midpoint",limits = chrom_lens_midpt, labels = names(chrom_lens), expand = expansion( mult = 0.02))+
+  theme( axis.text = element_text(size = 10),
+          panel.grid.major.x = element_blank(),
+          panel.grid.major.y = element_blank()) -> npc_eqtl_plot
+
+
+
+bands.esc.npc.rna %>% 
+  as_tibble() %>% 
+  select( chrom = seqnames, start, end, distant_npc_rna) %>% 
+  mutate( hotspot_midpoint = (start+end)/2 ) %>% 
+  # adding all the marker locations to match axes
+  rbind( (map_dat2 %>% 
+              select( chrom, start = pos_bp, end =pos_bp) %>% 
+              mutate( distant_npc_rna = 0,
+                      hotspot_midpoint = start))) %>% 
+  mutate( chrom = factor(chrom, levels = c(seq(1:19),"X")) ) -> npc_eqtl_counts
+
+# adding all the markers with 0 hotspot values to match the axes
+npc_eqtl_counts$midpoint_offset <- npc_eqtl_counts$hotspot_midpoint + chrom_lens_offset[npc_eqtl_counts$chrom]
+
+npc_eqtl_counts %>% 
+  ggplot()+
+  aes( x = midpoint_offset, 
+       y = distant_npc_rna)+
+  geom_bar( stat = "identity", width = 100, col =qtl.colors[["npc_rna"]], fill= qtl.colors[["npc_rna"]] )+
+  theme_pubclean(base_size = 16)+
+  scale_x_continuous( name = "Chr",
+                      breaks = chrom_lens_midpt, 
+                      labels = names(chrom_lens), expand = expansion(mult = .02) )+
+  xlab("")+
+  ylab("# of distant eQTL")+
+  theme( axis.text = element_text(size = 10)) -> trans_band_plot
+
+
+npc_eqtl_map_plot <- ggarrange( npc_eqtl_plot, trans_band_plot, nrow = 2, heights = c(0.7, 0.3))
+
+# ggsave(npc_eqtl_map_plot, filename = here("figures","figure3a.svg"), width = 8, height = 11, dpi = 300, units = "in")
+npc_eqtl_map_plot
+
+```
+
+
+# Comparison of eQTL maps of DO mESC and mNPC 
+
+::: {.panel-tabset .nav-pills}
+
+## Heritability of transcript abundance ESC vs NPC lines
+
+```{r herit_comp}
+#| warning: false
+#| message: false
+#| fig-width: 5
+#| fig-height: 4
+
+
+npc_herit %>%
+  as_tibble(rownames= "ensembl_gene_id") %>%
+  rename( "npc_h" = "value") %>% 
+  inner_join(
+    esc_herit %>% 
+      as_tibble( rownames = "ensembl_gene_id") %>% 
+      rename( "esc_h" = "value")
+  ) %>% 
+  left_join( all.genes) %>% 
+  ggplot()+
+  aes(
+    x= esc_h,
+    y = npc_h
+  )+
+  geom_point(alpha = 0.5)+
+  geom_smooth( method= "lm")+
+  stat_cor()+
+  xlab("ESC heritability")+
+  ylab("NPC heritability")+
+  theme_pubclean(base_size = 16)
+
+
+
+
+```
+
+## DO mESC and mNPC eQTL map: Shared genes and all eQTL
+
+Using +/- 10Mb for looking at overlap. 
+
+```{r esc_npc_eqtl_map}
+#| warning: false
+#| message: false
+#| fig-width: 8
+#| fig-height: 8
+
+ggplot()+
+  geom_rect( data = chrom_segments, aes( xmin =start, xmax = end, ymin = 0, ymax = max(end), fill = type), 
+             inherit.aes = FALSE, alpha = 0.2, show.legend = FALSE)+
+  scale_fill_manual(values = c("dark gray","white"))+
+  geom_point(data = peaks.npc_rna.wesc.overlap %>% 
+               filter( lod.npc_rna > 7.5, ensembl_gene_id %in% shared.genes, match =="npc_rna"), 
+            aes( x = cumsum_bp_peak.npc_rna, y = cumsum_bp_gene,col="NPC"),
+            size = 2, 
+            #col = qtl.colors[["npc_rna"]],
+             inherit.aes = FALSE )+
+  geom_point(data = peaks.esc_rna.wnpc.overlap %>% 
+               filter( lod.esc_rna > 7.5, ensembl_gene_id %in% shared.genes, match =="esc_rna"), 
+            aes( x = cumsum_bp_peak.esc_rna, y = cumsum_bp_gene, col ="ESC"),
+            size = 2, 
+            #col = qtl.colors[["esc_rna"]],
+             inherit.aes = FALSE )+
+  geom_point(data = peaks.npc_rna.wesc.overlap %>% 
+               filter( lod.npc_rna > 7.5, ensembl_gene_id %in% shared.genes, match =="shared"), 
+            aes( x = cumsum_bp_peak.npc_rna, y = cumsum_bp_gene,col="Shared"),
+            size = 2, 
+            #col = qtl.colors[["shared"]],
+             inherit.aes = FALSE )+
+  theme_pubclean(base_size = 16)+
+  scale_x_discrete( name = "eQTL peak",
+                    limits = chrom_lens_midpt, 
+                    labels = names(chrom_lens), 
+                    expand = expansion( mult = 0.02))+
+  scale_y_discrete( name = "Gene midpoint",limits = chrom_lens_midpt, labels = names(chrom_lens), expand = expansion( mult = 0.02))+
+  theme( axis.text = element_text(size = 10),
+          panel.grid.major.x = element_blank(),
+          panel.grid.major.y = element_blank())+
+  scale_color_manual( name = "eQTL",values = c("NPC"=qtl.colors[["npc_rna"]], "ESC"=qtl.colors[["esc_rna"]], "Shared"=qtl.colors[["shared"]]), labels = c("NPC","ESC","Shared"))
+
+```
+
+
+## DO mNPC eQTL map integrated: Shared genes and only significant NPC eQTL 
+
+```{r esc_npc_qtl_map_updated}
+#| warning: false
+#| message: false
+#| fig-width: 8
+#| fig-height: 11
+
+
+npc_eqtl_shared_plot <- ggplot()+
+  geom_rect( data = chrom_segments, aes( xmin =start, xmax = end, ymin = 0, ymax = max(end), fill = type), 
+             inherit.aes = FALSE, alpha = 0.2, show.legend = FALSE)+
+  scale_fill_manual(values = c("dark gray","white"))+
+  geom_point(data = peaks.npc_rna.wesc.overlap %>% 
+               filter( lod.npc_rna > 7.5, ensembl_gene_id %in% shared.genes, match =="npc_rna"), 
+            aes( x = cumsum_bp_peak.npc_rna, y = cumsum_bp_gene,col="NPC"),
+            size = 2, 
+            #col = qtl.colors[["npc_rna"]],
+             inherit.aes = FALSE )+
+  geom_point(data = peaks.npc_rna.wesc.overlap %>% 
+               filter( lod.npc_rna > 7.5, ensembl_gene_id %in% shared.genes, match =="shared"), 
+            aes( x = cumsum_bp_peak.npc_rna, y = cumsum_bp_gene,col="Shared"),
+            size = 2, 
+            #col = qtl.colors[["shared"]],
+             inherit.aes = FALSE )+
+  theme_pubclean(base_size = 16)+
+  scale_x_discrete( name = "eQTL peak",
+                    limits = chrom_lens_midpt, 
+                    labels = names(chrom_lens), 
+                    expand = expansion( mult = 0.02))+
+  scale_y_discrete( name = "Gene midpoint",limits = chrom_lens_midpt, labels = names(chrom_lens), expand = expansion( mult = 0.02))+
+  theme( axis.text = element_text(size = 10),
+          panel.grid.major.x = element_blank(),
+          panel.grid.major.y = element_blank())+
+  scale_color_manual( name = "eQTL",values = c("NPC"=qtl.colors[["npc_rna"]],  "Shared"=qtl.colors[["shared"]]), labels = c("NPC","Shared"))
+
+
+
+npc_eqtl_shared_map_plot <- ggarrange( npc_eqtl_shared_plot, trans_band_plot, nrow = 2, heights = c(0.7, 0.3))
+
+#ggsave(npc_eqtl_shared_map_plot, filename = here("figures","npc_eqtl_shared_map.svg"), width = 8, height = 11, dpi = 300, units = "in")
+
+npc_eqtl_shared_map_plot
+```
+
+## Overlapping eQTL
+
+```{r shared_qtl_effects}
+#| warning: false
+#| message: false
+
+# calculate allele effect correlations for overlapping qtl
+peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >= 7.5,  match =="shared") -> shared_eqtl
+peaks.esc_rna.wEffs %>% 
+  inner_join( ., shared_eqtl %>% 
+                select( ensembl_gene_id, peak_chr, lod.npc_rna)) %>% 
+  select(
+    ensembl_gene_id, peak_chr, lod.npc_rna, paste0(LETTERS[1:8],".esc_rna")
+  ) %>% 
+  full_join(
+    peaks.npc_rna.wEffs %>% 
+      inner_join( ., shared_eqtl %>% 
+                select( ensembl_gene_id, peak_chr, lod.npc_rna, lod.esc_rna)) %>% 
+      select(
+        ensembl_gene_id, peak_chr, lod.npc_rna, paste0(LETTERS[1:8],".npc_rna")
+      )
+  ) %>%
+  left_join( shared_eqtl) %>% 
+  mutate( qtl_id = 1:n()) -> shared_eqtl_weffs
+
+shared_eqtl_weffs %>% 
+  select( qtl_id, paste0(LETTERS[1:8],".npc_rna")) %>% 
+  column_to_rownames("qtl_id") %>% 
+  t() -> shared_eqtl_npc_effs
+colnames(shared_eqtl_npc_effs) <- paste0(colnames(shared_eqtl_npc_effs),"_npc")
+shared_eqtl_weffs %>% 
+  select( qtl_id, paste0(LETTERS[1:8],".esc_rna")) %>% 
+  column_to_rownames("qtl_id") %>% 
+  t() -> shared_eqtl_esc_effs
+colnames(shared_eqtl_esc_effs) <- paste0(colnames(shared_eqtl_esc_effs),"_esc")
+
+shared_eqtl_effs_cor <- rcorr( shared_eqtl_npc_effs, shared_eqtl_esc_effs)
+shared_eqtl_effs_cor_df <- tibble(
+  cor = diag( shared_eqtl_effs_cor$r[colnames(shared_eqtl_npc_effs),colnames(shared_eqtl_esc_effs)]),
+  p_val = diag( shared_eqtl_effs_cor$P[colnames(shared_eqtl_npc_effs),colnames(shared_eqtl_esc_effs)]),
+  n = diag( shared_eqtl_effs_cor$n[colnames(shared_eqtl_npc_effs),colnames(shared_eqtl_esc_effs)]),
+  qtl_id = as.numeric(gsub("_npc","",colnames(shared_eqtl_npc_effs)))
+) %>% 
+  left_join( shared_eqtl_weffs)
+
+
+
+```
+
+
+```{r shared_eqtl_table}
+#| warning: false
+#| message: false
+
+# table of shared eqtl with lod scores + allele effect correlations
+shared_eqtl_effs_cor_df %>% 
+  left_join( select(peaks.npc_rna.wEffs, ensembl_gene_id, peak_chr, lod.npc_rna, local.npc_rna)
+  ) %>% 
+  filter( !is.na(local.npc_rna)) %>% 
+  mutate( local = ifelse( local.npc_rna == TRUE, "Local", "Distant")) %>% 
+   mutate( p_adj = p.adjust(p_val, method = "BH")) %>% 
+  mutate(`Significance` =  ifelse(p_adj < 0.1, "FDR < 0.1", "ns")) %>% 
+  left_join( npc.genes %>% 
+               select(ensembl_gene_id, mgi_symbol)) %>% 
+  select(ensembl_gene_id, mgi_symbol, peak_chr, lod.esc_rna, lod.npc_rna, cor, Significance,local.npc_rna) %>%
+  mutate_if(is.numeric, round ,2) %>% 
+  create_dt()
+
+```
+
+
+```{r shared_lod_scores}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 6
+
+
+# plot esc vs npc lod scores for shared eQTL
+
+shared_eqtl_effs_cor_df %>% 
+  left_join( select(peaks.npc_rna.wEffs, ensembl_gene_id, peak_chr, lod.npc_rna, local.npc_rna)
+  ) %>% 
+  filter( !is.na(local.npc_rna)) %>% 
+  mutate( local = ifelse( local.npc_rna == TRUE, "Local", "Distant")) %>%
+   mutate( p_adj = p.adjust(p_val, method = "BH")) %>% 
+  mutate(`Significance` =  ifelse(p_adj < 0.1, "FDR < 0.1", "ns")) %>% 
+  ggplot()+
+  aes( x = lod.esc_rna,
+       y = lod.npc_rna,
+       col = Significance)+
+  geom_point(size =3, alpha = 0.7)+
+  theme_pubclean(base_size = 18)+
+  xlab( "ESC LOD")+
+  ylab( "NPC LOD")+
+  xlim(0, 80)+
+  ylim(0,80)+
+  #scale_color_gradient2()+
+  scale_color_manual(values = c("dark red","dark gray")) +
+  labs( col = "Significance")+
+  facet_wrap(~local)
+
+
+```
+
+
+
+```{r shared_qtl_eff_plot}
+#| warning: false
+#| message: false
+#| fig-width: 7
+#| fig-height: 5
+
+
+# plot all + local + distant
+shared_eqtl_effs_cor_df %>% 
+  mutate( p_adj = p.adjust(p_val, method = "BH")) %>% 
+  mutate(`Significance` =  ifelse(p_adj < 0.1, "FDR < 0.1", "ns")) %>% #count( p_adj <0.1)
+  ggplot() +
+  aes(x = cor, col = Significance, fill = Significance) +
+  geom_histogram(binwidth = 0.01) +
+  theme_pubclean(base_size = 18) +
+  #facet_wrap(~local, scales = "free") +
+  scale_color_manual(values = c(qtl.colors[["shared"]],"dark gray")) +
+  scale_fill_manual(values = c(qtl.colors[["shared"]],"dark gray")) +
+  xlab("Haplotype effects correlation")+
+  ylab("Count")+
+  xlim(-1,1)+
+  theme(legend.position = "top")
+  
+  
+
+```
+
+
+## Overlapping eQTL with opposite allele effects
+
+```{r shared_qtl_neg_corr}
+#| warning: false
+#| message: false
+
+# table
+shared_eqtl_effs_cor_df %>% 
+  left_join( select(peaks.npc_rna.wEffs, ensembl_gene_id, peak_chr, lod.npc_rna, local.npc_rna)
+  ) %>% 
+  mutate( p_adj = p.adjust(p_val, method = "BH")) %>% 
+  filter( cor < 0, p_adj < 0.1) %>% 
+  left_join( npc.genes %>% 
+               select(ensembl_gene_id, mgi_symbol)) %>% 
+  select(ensembl_gene_id, mgi_symbol, peak_chr, lod.esc_rna, lod.npc_rna, cor, local.npc_rna) %>%
+  mutate_if(is.numeric, round ,2) %>% 
+  create_dt()
+  
+
+
+```
+
+Only Stmn3 eQTL is distant (same chromosome but 11Mb away from midpoint).
+
+```{r shared_qtl_neg_cor_plot}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 12
+
+shared_eqtl_effs_cor_df %>%
+  left_join( all.genes %>% select(ensembl_gene_id, mgi_symbol)) %>% 
+  mutate( p_adj = p.adjust(p_val, method = "BH")) %>% 
+  filter( cor < 0, p_adj < 0.1) %>% 
+  select(mgi_symbol, paste0(LETTERS[1:8], ".esc_rna")) %>%
+  gather(founder, ESC_eff, `A.esc_rna`:`H.esc_rna`) %>%
+  mutate(founder = gsub(".esc_rna", "", founder)) -> temp1
+
+shared_eqtl_effs_cor_df %>%
+  left_join( all.genes %>% select(ensembl_gene_id, mgi_symbol)) %>% 
+  mutate( p_adj = p.adjust(p_val, method = "BH")) %>% 
+  filter( cor < 0, p_adj < 0.1) %>% 
+  select(mgi_symbol, paste0(LETTERS[1:8], ".npc_rna")) %>%
+  gather(founder, NPC_eff, `A.npc_rna`:`H.npc_rna`) %>%
+  mutate(founder = gsub(".npc_rna", "", founder)) -> temp2
+
+inner_join(temp1, temp2) %>%
+  gather(QTL, eff, `ESC_eff`:`NPC_eff`) %>%
+  ggplot() +
+  aes(x = founder, y = eff, col = QTL, group = interaction(QTL, mgi_symbol)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~mgi_symbol, ncol = 5, scales = "free") +
+  theme_pubclean(base_size = 14) +
+  geom_hline(yintercept = 0) +
+  ggtitle("Overlapping local QTL with opposing allele effects")
+
+
+```
+
+## Overlapping eQTL lacking agreement in allele effects (abs(cor)<0.1, adjusted p >0.1)
+
+```{r shared_qtl_no_corr}
+#| warning: false
+#| message: false
+
+# table? plot? with overlapping eqtl with no correlation btw allele effects
+shared_eqtl_effs_cor_df %>% 
+  left_join( select(peaks.npc_rna.wEffs, ensembl_gene_id, peak_chr, lod.npc_rna, local.npc_rna)
+  ) %>% 
+  mutate( p_adj = p.adjust(p_val, method = "BH")) %>% 
+  filter( abs(cor) < 0.1, p_adj > 0.1) %>% 
+    left_join( npc.genes %>% 
+               select(ensembl_gene_id, mgi_symbol)) %>% 
+  select(ensembl_gene_id, mgi_symbol, peak_chr, lod.esc_rna, lod.npc_rna, cor, local.npc_rna) %>%
+  mutate_if(is.numeric, round ,2) %>% 
+  create_dt()
+
+```
+
+## eQTL uniquely observed in NPCs
+
+
+```{r npc_only_eqtl_table}
+#| warning: false
+#| message: false
+
+shared_eqtl_effs_cor_df %>% 
+  mutate( p_adj = p.adjust(p_val, method = "BH")) %>% 
+  filter( p_adj > 0.1) %>% 
+  select(ensembl_gene_id, lod.npc_rna, peak_chr) -> shared.wo.corr
+
+peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >= 7.5, match =="npc_rna", local.npc_rna ==T, ensembl_gene_id %in% shared.genes) %>% 
+  rbind(
+    peaks.npc_rna.wesc.overlap %>% 
+      inner_join( shared.wo.corr) %>% 
+      filter( local.npc_rna)
+  ) -> unique_npc_local_eqtl
+
+
+peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >= 7.5, match =="npc_rna", local.npc_rna ==F, ensembl_gene_id %in% shared.genes) %>% 
+    rbind(
+    peaks.npc_rna.wesc.overlap %>% 
+      inner_join( shared.wo.corr) %>% 
+      filter( !local.npc_rna)
+  ) -> unique_npc_distant_eqtl
+
+
+unique_npc_local_eqtl %>% 
+  rbind(unique_npc_distant_eqtl) %>% 
+  select( ensembl_gene_id, mgi_symbol, gene_chr, peak_chr, lod.npc_rna, lod.esc_rna,local.npc_rna ) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  create_dt()
+
+
+```
+
+```{r}
+#| eval: false
+# Looking at the best mediator for the unique NPC eQTL.
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    unique_npc_local_eqtl %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 2) %>% 
+  filter( target.symbol == mediator.symbol) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, target.chr, target.lod,mediation.lod, mediator.lod,  type)
+
+
+```
+
+```{r npc_only_eqtl_ora}
+#| warning: false
+#| message: false
+
+genes.w.eqtl <- peaks.npc_rna.wEffs %>% 
+  filter(lod.npc_rna > 7.5) %>% 
+  select(ensembl_gene_id, local.npc_rna) %>% 
+  distinct() %>% 
+  left_join(npc.genes) %>% 
+  filter( ensembl_gene_id %in% shared.genes)
+
+g.unique.local <- gost(
+  query = unique(unique_npc_local_eqtl$mgi_symbol),
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg = unique((genes.w.eqtl %>% filter(local.npc_rna))$mgi_symbol), #npc.genes$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+g.unique.local$result <- g.unique.local$result %>% filter(term_size < 660)
+
+g.unique.dist <- gost(
+  query = unique(unique_npc_distant_eqtl$mgi_symbol),
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg =  unique((genes.w.eqtl %>% filter(!local.npc_rna))$mgi_symbol), #npc.genes$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+g.unique.dist$result <- g.unique.dist$result %>% filter(term_size < 660)
+
+
+```
+
+
+### ORA results for genes with unique NPC local eQTL
+
+Note that I am running ORA for the genes with unique NPC eQTL using a custom background of genes with local eQTL instead of the full NPC gene list.
+
+```{r npc_unique_local_ora}
+#| warning: false
+#| message: false
+
+g.unique.local$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+
+### ORA results for genes with unique NPC distant eQTL
+
+Note that I am running ORA for the genes with unique NPC eQTL using a custom background of genes with distant eQTL instead of the full NPC gene list.
+
+```{r npc_unique_dist_ora}
+#| warning: false
+#| message: false
+
+g.unique.dist$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+
+There are more than 400 TFs overrepresented with around 150 of them expressed in NPCs. Only 23 have eQTLs in NPCs as listed below.
+
+```{r tf_motifs_dist_eqtl}
+#| warning: false
+#| message: false
+
+unique_npc_distant_eqtl_TFs <- g.unique.dist$result %>% 
+  filter( p_value <0.01) %>% 
+  filter(
+    source == "TF"
+  ) %>% 
+  mutate( 
+    TF = str_replace(str_replace(str_replace(str_to_upper(str_split_i(str_split_i(term_name, ":",2), ";",1)), pattern = "-", replacement = ""), pattern = ".",replacement = ""), pattern = "," , replacement = "")
+    ) %>% 
+  mutate( TF = str_to_title(TF)) %>% 
+  select(TF, intersection, intersection_size, term_size, term_name, term_id, p_value)
+
+
+peaks.npc_rna.wesc.overlap %>% 
+  filter(mgi_symbol %in% unique_npc_distant_eqtl_TFs$TF,
+         lod.npc_rna >=7.5 | lod.esc_rna >= 7.5) %>% 
+  select( ensembl_gene_id, mgi_symbol, peak_chr, gene_chr,match, lod.npc_rna, lod.esc_rna, interp_bp_peak.npc_rna, interp_bp_peak.esc_rna, local.npc_rna, local.esc_rna) %>% 
+  mutate_if( is.numeric, round, 2) %>% 
+  create_dt()
+   
+
+```
+
+
+Out of 757 genes with unique distant eQTL in NPCs, 637 of them intersect with TF motif gene sets in total. The range for the total number of genes identified in relation to a TF varies between 34 and 626, and the number of TFs a gene has been identified in relation to ranges between 134 and 241 suggesting significant overlap across the TF motif gene sets.
+
+```{r tf_motifs_dist_eqtl_genes}
+#| warning: false
+#| message: false
+#| results: hide
+
+
+unique_npc_distant_eqtl_TF_genes <- unique_npc_distant_eqtl_TFs %>% 
+  select(TF,term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes) 
+
+unique_npc_distant_eqtl_TF_genes %>% 
+  select(TF, mgi_symbol) %>% 
+  group_by(TF)  %>% 
+  mutate( `# of Genes` = n_distinct(mgi_symbol)) %>% 
+  select( -mgi_symbol) %>% distinct() %>% arrange(`# of Genes`) 
+
+unique_npc_distant_eqtl_TF_genes %>% 
+  select(TF, Gene = mgi_symbol) %>% 
+  group_by(Gene) %>% 
+  mutate( #TFs = paste0(TF, collapse = ", "), 
+          `# of TFs` = n_distinct(TF)) %>% 
+  select( -TF) %>% distinct() %>% arrange(`# of TFs`)
+
+# Looking to see if these TFs are best mediators for any of the distant eQTL
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    unique_npc_distant_eqtl %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 2) %>% 
+  filter( target.symbol != mediator.symbol) %>% 
+  filter( mediator.symbol %in% unique_npc_distant_eqtl_TF_genes$TF) %>% 
+  arrange( mediation.lod) %>% 
+  select( target.symbol, target.chr, target.lod,mediator.symbol, mediation.lod, mediator.lod,  type) %>% 
+  create_dt()
+
+# nothing really worth following up here!
+
+
+```
+
+
+
+## eQTL uniquely observed in ESCs
+
+Nothing! 
+
+```{r esc_only_eqtl_ora}
+#| warning: false
+#| message: false
+
+peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.esc_rna > 7.5,
+          match =="esc_rna", 
+          local.esc_rna ==T, 
+          ensembl_gene_id %in% shared.genes) %>% 
+  rbind(
+    peaks.npc_rna.wesc.overlap %>% 
+      inner_join( shared.wo.corr) %>% 
+      filter( local.esc_rna)
+  ) -> unique_esc_local_eqtl
+
+
+peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.esc_rna > 7.5, 
+          match =="esc_rna", 
+          local.esc_rna ==F, 
+          ensembl_gene_id %in% shared.genes) %>% 
+    rbind(
+    peaks.npc_rna.wesc.overlap %>% 
+      inner_join( shared.wo.corr) %>% 
+      filter( !local.esc_rna)
+  ) -> unique_esc_distant_eqtl
+
+genes.w.eqtl_esc <- peaks.esc_rna.wEffs %>% 
+  filter(lod.esc_rna > 7.5) %>% 
+  select(ensembl_gene_id, local.esc_rna) %>% 
+  distinct() %>% 
+  left_join(esc.genes) %>% 
+  filter( ensembl_gene_id %in% shared.genes)
+
+g.unique.local_esc <- gost(
+  query = unique(unique_esc_local_eqtl$mgi_symbol),
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg = unique((genes.w.eqtl_esc %>% filter(local.esc_rna))$mgi_symbol), #npc.genes$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+#g.unique.local_esc$result <- g.unique.local_esc$result %>% filter(term_size < 660)
+
+g.unique.dist_esc <- gost(
+  query = unique(unique_esc_distant_eqtl$mgi_symbol),
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg =  unique((genes.w.eqtl_esc %>% filter(!local.esc_rna))$mgi_symbol), #npc.genes$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+g.unique.dist_esc$result <- g.unique.dist_esc$result %>% filter(term_size < 660)
+```
+
+
+
+
+## Examples 
+
+::: {.panel-tabset .nav-pills}
+
+Example of shared eQTL with matching allele effects: Csnk2a1
+
+Example of shared eQTL with opposite allele effects: Amph
+
+Example of unique eQTL: Gbx2 (l), Lats1(d)
+
+### Csnk2a1 (local)
+
+```{r Csnk2a1_eqtl}
+#| warning: false
+#| message: false
+
+
+Csnk2a1_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Csnk2a1", local.npc_rna ==T)
+
+# LOD plot
+Csnk2a1_esc_scan <- scan1( pheno = exprZ.esc_rna[,Csnk2a1_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.esc_rna, 
+                    kinship = kinship_loco.esc_rna,
+                    addcovar = covar.esc_rna)
+
+Csnk2a1_npc_scan <- scan1( pheno = exprZ.npc_rna[,Csnk2a1_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+
+
+Csnk2a1_esc_scan %>% 
+  as.data.frame( ) %>% 
+  rename( esc_rna = Csnk2a1_eqtl$ensembl_gene_id) %>% 
+  mutate( marker = dimnames(Csnk2a1_esc_scan)[[1]]) %>% 
+  left_join(map_dat2) %>% 
+  cbind(
+    Csnk2a1_npc_scan %>% as.data.frame() %>% rename( npc_rna = Csnk2a1_eqtl$ensembl_gene_id)
+  ) -> Csnk2a1_qtl_scans
+
+Csnk2a1_qtl_scans %>% 
+  filter( chr == Csnk2a1_eqtl$peak_chr) %>% 
+  pivot_longer( cols = c("npc_rna","esc_rna"), names_to = "qtl_type", values_to = "lod") %>% 
+  mutate( qtl_type = factor( qtl_type, levels = c("npc_rna","esc_rna"))) %>% 
+  ggplot()+
+    aes( 
+      x= pos_bp/1e06,
+      y = lod,
+      col = qtl_type
+      )+
+    geom_line( size = 1.5)+
+    theme_pubclean( base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
+                       labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  xlab(paste0("Chr ",Csnk2a1_eqtl$peak_chr," location (Mbp)"))+
+  ylab( "LOD score")+
+  labs(col = "QTL type")+
+  geom_segment( x = Csnk2a1_eqtl$gene_start/1e06, xend = Csnk2a1_eqtl$gene_end/1e06 , y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= Csnk2a1_eqtl$midpoint/1e06, y = -0.8, label ="Csnk2a1", size =6, fontface = "italic")-> Csnk2a1_lod_plot
+
+
+
+# Effects plot
+Csnk2a1_esc_eff <- peaks.esc_rna.wEffs %>% 
+  inner_join( Csnk2a1_eqtl %>% select(ensembl_gene_id, peak_chr, lod.esc_rna))
+
+Csnk2a1_npc_eff <- peaks.npc_rna.wEffs %>% 
+  inner_join( Csnk2a1_eqtl %>% select(ensembl_gene_id, peak_chr, lod.npc_rna))
+Csnk2a1_effs <- Csnk2a1_esc_eff %>% 
+  select( mgi_symbol, paste0(LETTERS[1:8], ".esc_rna")) %>% 
+  cbind( Csnk2a1_npc_eff %>% select(paste0(LETTERS[1:8], ".npc_rna")) ) 
+
+Csnk2a1_effs %>% 
+  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna"),
+          paste0(LETTERS[1:8], ".esc_rna")), 
+          names_to = c("effect"),
+          values_to = "value") %>% 
+  separate(effect, sep ="[.]", into = c("effect","type")) %>% 
+  mutate( effect = case_when( effect == "A" ~ "AJ",
+                              effect == "B" ~ "B6",
+                              effect == "C" ~ "129",
+                              effect == "D" ~ "NOD",
+                              effect == "E" ~ "NZO",
+                              effect == "F" ~ "CAST",
+                              effect == "G" ~ "PWK",
+                              effect == "H" ~ "WSB")) %>% 
+  mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>% 
+  ggplot()+
+  aes( x = effect,
+       y = value, 
+       col = type,
+       group = type)+
+  geom_point(size = 4, show.legend = FALSE)+
+  geom_line(show.legend = T, size = 1.2)+
+  theme_pubclean(base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
+                      labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  ylab("Haplotype effects")+
+  xlab("")+
+  #ylim(-2,1.1)+
+  geom_hline( yintercept = 0)+
+  theme(axis.line.x = element_blank(),
+        axis.title = element_text(size = 18))+
+  labs(col ="QTL type")+
+  coord_flip( clip ="off")+
+  theme(legend.position = "none") -> Csnk2a1_haplotype_plot
+
+```
+
+
+```{r Csnk2a1_lod_haps_plot}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 5
+
+
+ggarrange( Csnk2a1_lod_plot, Csnk2a1_haplotype_plot, widths = c(1, 0.5))
+
+```
+
+
+### Dpysl2 (local)
+
+```{r Dpysl2_eqtl}
+#| warning: false
+#| message: false
+
+Dpysl2_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Dpysl2", local.npc_rna ==T)
+
+# LOD plot
+Dpysl2_esc_scan <- scan1( pheno = exprZ.esc_rna[,Dpysl2_eqtl$ensembl_gene_id,drop=FALSE], 
+                           genoprobs = probs.esc_rna, 
+                           kinship = kinship_loco.esc_rna,
+                           addcovar = covar.esc_rna)
+
+Dpysl2_npc_scan <- scan1( pheno = exprZ.npc_rna[,Dpysl2_eqtl$ensembl_gene_id,drop=FALSE], 
+                           genoprobs = probs.npc_rna, 
+                           kinship = kinship_loco.npc_rna,
+                           addcovar = covar.npc_rna)
+
+
+Dpysl2_esc_scan %>% 
+  as.data.frame( ) %>% 
+  rename( esc_rna = Dpysl2_eqtl$ensembl_gene_id) %>% 
+  mutate( marker = dimnames(Dpysl2_esc_scan)[[1]]) %>% 
+  left_join(map_dat2) %>% 
+  cbind(
+    Dpysl2_npc_scan %>% as.data.frame() %>% rename( npc_rna = Dpysl2_eqtl$ensembl_gene_id)
+  ) -> Dpysl2_qtl_scans
+
+Dpysl2_qtl_scans %>% 
+  filter( chr == Dpysl2_eqtl$peak_chr) %>% 
+  pivot_longer( cols = c("npc_rna","esc_rna"), names_to = "qtl_type", values_to = "lod") %>% 
+  mutate( qtl_type = factor( qtl_type, levels = c("npc_rna","esc_rna"))) %>% 
+  ggplot()+
+  aes( 
+    x= pos_bp/1e06,
+    y = lod,
+    col = qtl_type
+  )+
+  geom_line( size = 1.5)+
+  theme_pubclean( base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
+                      labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  xlab(paste0("Chr ",Dpysl2_eqtl$peak_chr," location (Mbp)"))+
+  ylab( "LOD score")+
+  labs(col = "QTL type")+
+  geom_segment( x = Dpysl2_eqtl$gene_start/1e06, xend = Dpysl2_eqtl$gene_end/1e06 , y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= Dpysl2_eqtl$midpoint/1e06, y = -0.8, label ="Dpysl2", size =6, fontface = "italic")-> Dpysl2_lod_plot
+
+
+
+# Effects plot
+Dpysl2_esc_eff <- peaks.esc_rna.wEffs %>% 
+  inner_join( Dpysl2_eqtl %>% select(ensembl_gene_id, peak_chr, lod.esc_rna))
+
+Dpysl2_npc_eff <- peaks.npc_rna.wEffs %>% 
+  inner_join( Dpysl2_eqtl %>% select(ensembl_gene_id, peak_chr, lod.npc_rna))
+Dpysl2_effs <- Dpysl2_esc_eff %>% 
+  select( mgi_symbol, paste0(LETTERS[1:8], ".esc_rna")) %>% 
+  cbind( Dpysl2_npc_eff %>% select(paste0(LETTERS[1:8], ".npc_rna")) ) 
+
+Dpysl2_effs %>% 
+  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna"),
+                          paste0(LETTERS[1:8], ".esc_rna")), 
+                names_to = c("effect"),
+                values_to = "value") %>% 
+  separate(effect, sep ="[.]", into = c("effect","type")) %>% 
+  mutate( effect = case_when( effect == "A" ~ "AJ",
+                              effect == "B" ~ "B6",
+                              effect == "C" ~ "129",
+                              effect == "D" ~ "NOD",
+                              effect == "E" ~ "NZO",
+                              effect == "F" ~ "CAST",
+                              effect == "G" ~ "PWK",
+                              effect == "H" ~ "WSB")) %>% 
+  mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>% 
+  ggplot()+
+  aes( x = effect,
+       y = value, 
+       col = type,
+       group = type)+
+  geom_point(size = 4, show.legend = FALSE)+
+  geom_line(show.legend = T, size = 1.2)+
+  theme_pubclean(base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
+                      labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  ylab("Haplotype effects")+
+  xlab("")+
+  #ylim(-2,1.1)+
+  geom_hline( yintercept = 0)+
+  theme(axis.line.x = element_blank(),
+        axis.title = element_text(size = 18))+
+  labs(col ="QTL type")+
+  coord_flip( clip ="off")+
+  theme(legend.position = "none") -> Dpysl2_haplotype_plot
+
+```
+
+```{r Dpysl2_lod_haps_plot}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 5
+
+ggarrange( Dpysl2_lod_plot, Dpysl2_haplotype_plot, widths = c(1, 0.5))
+
+```
+
+### Amph (local)
+
+```{r Amph_eqtl}
+#| warning: false
+#| message: false
+
+Amph_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Amph", local.npc_rna == T)
+
+# LOD plot
+Amph_esc_scan <- scan1( pheno = exprZ.esc_rna[,Amph_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.esc_rna, 
+                    kinship = kinship_loco.esc_rna,
+                    addcovar = covar.esc_rna)
+
+Amph_npc_scan <- scan1( pheno = exprZ.npc_rna[,Amph_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+
+
+Amph_esc_scan %>% 
+  as.data.frame( ) %>% 
+  rename( esc_rna = Amph_eqtl$ensembl_gene_id) %>% 
+  mutate( marker = dimnames(Amph_esc_scan)[[1]]) %>% 
+  left_join(map_dat2) %>% 
+  cbind(
+    Amph_npc_scan %>% as.data.frame() %>% rename( npc_rna = Amph_eqtl$ensembl_gene_id)
+  ) -> Amph_qtl_scans
+
+Amph_qtl_scans %>% 
+  filter( chr == Amph_eqtl$peak_chr) %>% 
+  pivot_longer( cols = c("npc_rna","esc_rna"), names_to = "qtl_type", values_to = "lod") %>% 
+  mutate( qtl_type = factor( qtl_type, levels = c("npc_rna","esc_rna"))) %>% 
+  ggplot()+
+    aes( 
+      x= pos_bp/1e06,
+      y = lod,
+      col = qtl_type
+      )+
+    geom_line( size = 1.5)+
+    theme_pubclean( base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
+                       labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  xlab(paste0("Chr ",Amph_eqtl$peak_chr," location (Mbp)"))+
+  ylab( "LOD score")+
+  labs(col = "QTL type")+
+  geom_segment( x = Amph_eqtl$gene_start/1e06, xend = Amph_eqtl$gene_end/1e06 , y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= Amph_eqtl$midpoint/1e06, y = -0.8, label ="Amph", size =6, fontface = "italic")-> Amph_lod_plot
+
+
+
+# Effects plot
+Amph_esc_eff <- peaks.esc_rna.wEffs %>% 
+  inner_join( Amph_eqtl %>% select(ensembl_gene_id, peak_chr, lod.esc_rna))
+
+Amph_npc_eff <- peaks.npc_rna.wEffs %>% 
+  inner_join( Amph_eqtl %>% select(ensembl_gene_id, peak_chr, lod.npc_rna))
+Amph_effs <- Amph_esc_eff %>% 
+  select( mgi_symbol, paste0(LETTERS[1:8], ".esc_rna")) %>% 
+  cbind( Amph_npc_eff %>% select(paste0(LETTERS[1:8], ".npc_rna")) ) 
+
+Amph_effs %>% 
+  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna"),
+          paste0(LETTERS[1:8], ".esc_rna")), 
+          names_to = c("effect"),
+          values_to = "value") %>% 
+  separate(effect, sep ="[.]", into = c("effect","type")) %>% 
+  mutate( effect = case_when( effect == "A" ~ "AJ",
+                              effect == "B" ~ "B6",
+                              effect == "C" ~ "129",
+                              effect == "D" ~ "NOD",
+                              effect == "E" ~ "NZO",
+                              effect == "F" ~ "CAST",
+                              effect == "G" ~ "PWK",
+                              effect == "H" ~ "WSB")) %>% 
+  mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>% 
+  ggplot()+
+  aes( x = effect,
+       y = value, 
+       col = type,
+       group = type)+
+  geom_point(size = 4, show.legend = FALSE)+
+  geom_line(show.legend = T, size = 1.2)+
+  theme_pubclean(base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
+                      labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  ylab("Haplotype effects")+
+  xlab("")+
+  #ylim(-2,1.1)+
+  geom_hline( yintercept = 0)+
+  theme(axis.line.x = element_blank(),
+        axis.title = element_text(size = 18))+
+  labs(col ="QTL type")+
+  coord_flip( clip ="off")+
+  theme(legend.position = "none") -> Amph_haplotype_plot
+
+```
+
+
+```{r Amph_lod_haps_plot}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 5
+
+ggarrange( Amph_lod_plot, Amph_haplotype_plot, widths = c(1, 0.5))
+
+```
+
+### Gbx2 (local)
+
+```{r Gbx2_eqtl}
+#| warning: false
+#| message: false
+
+Gbx2_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Gbx2", local.npc_rna ==T)
+
+# LOD plot
+Gbx2_npc_scan <- scan1( pheno = exprZ.npc_rna[,Gbx2_eqtl$ensembl_gene_id,drop=FALSE], 
+                           genoprobs = probs.npc_rna, 
+                           kinship = kinship_loco.npc_rna,
+                           addcovar = covar.npc_rna)
+
+
+Gbx2_npc_scan %>% 
+  as.data.frame( ) %>% 
+  rename( npc_rna = Gbx2_eqtl$ensembl_gene_id) %>% 
+  mutate( marker = dimnames(Gbx2_npc_scan)[[1]]) %>% 
+  left_join(map_dat2) -> Gbx2_qtl_scans
+
+Gbx2_qtl_scans %>% 
+  filter( chr == Gbx2_eqtl$peak_chr) %>% 
+  pivot_longer( cols = c("npc_rna"), names_to = "qtl_type", values_to = "lod") %>% 
+  #mutate( qtl_type = factor( qtl_type, levels = c("npc_rna","esc_rna"))) %>% 
+  ggplot()+
+  aes( 
+    x= pos_bp/1e06,
+    y = lod,
+    col = qtl_type
+  )+
+  geom_line( size = 1.5)+
+  theme_pubclean( base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]]), 
+                      labels = c("npc_rna"="NPC"))+
+  xlab(paste0("Chr ",Gbx2_eqtl$peak_chr," location (Mbp)"))+
+  ylab( "LOD score")+
+  labs(col = "QTL type")+
+  geom_segment( x = Gbx2_eqtl$gene_start/1e06, xend = Gbx2_eqtl$gene_end/1e06 , y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= Gbx2_eqtl$midpoint/1e06, y = -0.8, label ="Gbx2", size =6, fontface = "italic")-> Gbx2_lod_plot
+
+
+
+# Effects plot
+Gbx2_npc_eff <- peaks.npc_rna.wEffs %>% 
+  inner_join( Gbx2_eqtl %>% select(ensembl_gene_id, peak_chr, lod.npc_rna))
+Gbx2_effs <- Gbx2_npc_eff %>% 
+  select(paste0(LETTERS[1:8], ".npc_rna"))  
+
+Gbx2_effs %>% 
+  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna")), 
+                names_to = c("effect"),
+                values_to = "value") %>% 
+  separate(effect, sep ="[.]", into = c("effect","type")) %>% 
+  mutate( effect = case_when( effect == "A" ~ "AJ",
+                              effect == "B" ~ "B6",
+                              effect == "C" ~ "129",
+                              effect == "D" ~ "NOD",
+                              effect == "E" ~ "NZO",
+                              effect == "F" ~ "CAST",
+                              effect == "G" ~ "PWK",
+                              effect == "H" ~ "WSB")) %>% 
+  mutate( type = factor(type, levels =c("npc_rna"))) %>% 
+  ggplot()+
+  aes( x = effect,
+       y = value, 
+       col = type,
+       group = type)+
+  geom_point(size = 4, show.legend = FALSE)+
+  geom_line(show.legend = T, size = 1.2)+
+  theme_pubclean(base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]]), 
+                      labels = c("npc_rna"="NPC"))+
+  ylab("Haplotype effects")+
+  xlab("")+
+  #ylim(-2,1.1)+
+  geom_hline( yintercept = 0)+
+  theme(axis.line.x = element_blank(),
+        axis.title = element_text(size = 18))+
+  labs(col ="QTL type")+
+  coord_flip( clip ="off")+
+  theme(legend.position = "none") -> Gbx2_haplotype_plot
+
+```
+
+```{r Gbx2_lod_haps_plot}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 5
+
+ggarrange( Gbx2_lod_plot, Gbx2_haplotype_plot, widths = c(1, 0.5))
+
+```
+
+### Lats1 (distant)
+
+```{r Lats1_eqtl}
+#| warning: false
+#| message: false
+
+Lats1_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Lats1", local.npc_rna ==F)
+
+# LOD plot
+
+Lats1_npc_scan <- scan1( pheno = exprZ.npc_rna[,Lats1_eqtl$ensembl_gene_id,drop=FALSE], 
+                           genoprobs = probs.npc_rna, 
+                           kinship = kinship_loco.npc_rna,
+                           addcovar = covar.npc_rna)
+
+Lats1_npc_scan %>% 
+  as.data.frame( ) %>% 
+  mutate( marker = dimnames(Lats1_npc_scan)[[1]]) %>% 
+  rename( npc_rna = Lats1_eqtl$ensembl_gene_id) %>% 
+  left_join(map_dat2)  -> Lats1_qtl_scans
+
+Lats1_qtl_scans %>% 
+  filter( chr == Lats1_eqtl$peak_chr) %>% 
+  pivot_longer( cols = c("npc_rna"), names_to = "qtl_type", values_to = "lod") %>% 
+  mutate( qtl_type = factor( qtl_type, levels = c("npc_rna"))) %>% 
+  ggplot()+
+  aes( 
+    x= pos_bp/1e06,
+    y = lod,
+    col = qtl_type
+  )+
+  geom_line( size = 1.5)+
+  theme_pubclean( base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]]), 
+                      labels = c("npc_rna"="NPC"))+
+  xlab(paste0("Chr ",Lats1_eqtl$peak_chr," location (Mbp)"))+
+  ylab( "LOD score")+
+  labs(col = "QTL type")+
+  #geom_segment( x = Lats1_eqtl$gene_start/1e06, xend = Lats1_eqtl$gene_end/1e06 , y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= Lats1_eqtl$midpoint/1e06, y = -0.8, label ="Lats1", size =6, fontface = "italic")-> Lats1_lod_plot
+
+
+
+# Effects plot
+Lats1_npc_eff <- peaks.npc_rna.wEffs %>% 
+  inner_join( Lats1_eqtl %>% select(ensembl_gene_id, peak_chr, lod.npc_rna))
+Lats1_effs <- Lats1_npc_eff %>% 
+  select( mgi_symbol, paste0(LETTERS[1:8], ".npc_rna"))
+
+Lats1_effs %>% 
+  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna")), 
+                names_to = c("effect"),
+                values_to = "value") %>% 
+  separate(effect, sep ="[.]", into = c("effect","type")) %>% 
+  mutate( effect = case_when( effect == "A" ~ "AJ",
+                              effect == "B" ~ "B6",
+                              effect == "C" ~ "129",
+                              effect == "D" ~ "NOD",
+                              effect == "E" ~ "NZO",
+                              effect == "F" ~ "CAST",
+                              effect == "G" ~ "PWK",
+                              effect == "H" ~ "WSB")) %>% 
+  mutate( type = factor(type, levels =c("npc_rna"))) %>% 
+  ggplot()+
+  aes( x = effect,
+       y = value, 
+       col = type,
+       group = type)+
+  geom_point(size = 4, show.legend = FALSE)+
+  geom_line(show.legend = T, size = 1.2)+
+  theme_pubclean(base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]]), 
+                      labels = c("npc_rna"="NPC"))+
+  ylab("Haplotype effects")+
+  xlab("")+
+  #ylim(-2,1.1)+
+  geom_hline( yintercept = 0)+
+  theme(axis.line.x = element_blank(),
+        axis.title = element_text(size = 18))+
+  labs(col ="QTL type")+
+  coord_flip( clip ="off")+
+  theme(legend.position = "none") -> Lats1_haplotype_plot
+
+```
+
+```{r Lats1_lod_haps_plot}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 5
+
+ggarrange( Lats1_lod_plot, Lats1_haplotype_plot, widths = c(1, 0.5))
+
+```
+
+<!-- ### Dyrk1a -->
+
+<!-- ```{r Dyrk1a_eqtl} -->
+<!-- #| warning: false -->
+<!-- #| message: false -->
+
+<!-- Dyrk1a_eqtl <- peaks.npc_rna.wesc.overlap %>%  -->
+<!--   filter( lod.esc_rna >7.5, mgi_symbol =="Dyrk1a") -->
+
+<!-- # LOD plot -->
+<!-- Dyrk1a_esc_scan <- scan1( pheno = exprZ.esc_rna[,Dyrk1a_eqtl$ensembl_gene_id,drop=FALSE],  -->
+<!--                     genoprobs = probs.esc_rna,  -->
+<!--                     kinship = kinship_loco.esc_rna, -->
+<!--                     addcovar = covar.esc_rna) -->
+
+<!-- Dyrk1a_npc_scan <- scan1( pheno = exprZ.npc_rna[,Dyrk1a_eqtl$ensembl_gene_id,drop=FALSE],  -->
+<!--                     genoprobs = probs.npc_rna,  -->
+<!--                     kinship = kinship_loco.npc_rna, -->
+<!--                     addcovar = covar.npc_rna) -->
+
+
+<!-- Dyrk1a_esc_scan %>%  -->
+<!--   as.data.frame( ) %>%  -->
+<!--   rename( esc_rna = Dyrk1a_eqtl$ensembl_gene_id) %>%  -->
+<!--   mutate( marker = dimnames(Dyrk1a_esc_scan)[[1]]) %>%  -->
+<!--   left_join(map_dat2) %>%  -->
+<!--   cbind( -->
+<!--     Dyrk1a_npc_scan %>% as.data.frame() %>% rename( npc_rna = Dyrk1a_eqtl$ensembl_gene_id) -->
+<!--   ) -> Dyrk1a_qtl_scans -->
+
+<!-- Dyrk1a_qtl_scans %>%  -->
+<!--   filter( chr == Dyrk1a_eqtl$peak_chr) %>%  -->
+<!--   pivot_longer( cols = c("npc_rna","esc_rna"), names_to = "qtl_type", values_to = "lod") %>%  -->
+<!--   mutate( qtl_type = factor( qtl_type, levels = c("npc_rna","esc_rna"))) %>%  -->
+<!--   ggplot()+ -->
+<!--     aes(  -->
+<!--       x= pos_bp/1e06, -->
+<!--       y = lod, -->
+<!--       col = qtl_type -->
+<!--       )+ -->
+<!--     geom_line( size = 1.5)+ -->
+<!--     theme_pubclean( base_size = 18)+ -->
+<!--   scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]),  -->
+<!--                        labels = c("npc_rna"="NPC","esc_rna"="ESC"))+ -->
+<!--   xlab(paste0("Chr ",Dyrk1a_eqtl$peak_chr," location (Mbp)"))+ -->
+<!--   ylab( "LOD score")+ -->
+<!--   labs(col = "QTL type")+ -->
+<!--   geom_segment( x = Dyrk1a_eqtl$gene_start/1e06, xend = Dyrk1a_eqtl$gene_end/1e06 , y = 0, yend = 1, col = "black", size = 2) + -->
+<!--   annotate( "text", x= Dyrk1a_eqtl$midpoint/1e06, y = -0.8, label ="Dyrk1a", size =6, fontface = "italic")-> Dyrk1a_lod_plot -->
+
+
+
+<!-- # Effects plot -->
+<!-- Dyrk1a_esc_eff <- peaks.esc_rna.wEffs %>%  -->
+<!--   inner_join( Dyrk1a_eqtl %>% select(ensembl_gene_id, peak_chr, lod.esc_rna)) -->
+
+<!-- Dyrk1a_npc_eff <- peaks.npc_rna.wEffs %>%  -->
+<!--   inner_join( Dyrk1a_eqtl %>% select(ensembl_gene_id, peak_chr, lod.npc_rna)) -->
+<!-- Dyrk1a_effs <- Dyrk1a_esc_eff %>%  -->
+<!--   select( mgi_symbol, paste0(LETTERS[1:8], ".esc_rna")) %>%  -->
+<!--   cbind( Dyrk1a_npc_eff %>% select(paste0(LETTERS[1:8], ".npc_rna")) )  -->
+
+<!-- Dyrk1a_effs %>%  -->
+<!--   pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna"), -->
+<!--           paste0(LETTERS[1:8], ".esc_rna")),  -->
+<!--           names_to = c("effect"), -->
+<!--           values_to = "value") %>%  -->
+<!--   separate(effect, sep ="[.]", into = c("effect","type")) %>%  -->
+<!--   mutate( effect = case_when( effect == "A" ~ "AJ", -->
+<!--                               effect == "B" ~ "B6", -->
+<!--                               effect == "C" ~ "129", -->
+<!--                               effect == "D" ~ "NOD", -->
+<!--                               effect == "E" ~ "NZO", -->
+<!--                               effect == "F" ~ "CAST", -->
+<!--                               effect == "G" ~ "PWK", -->
+<!--                               effect == "H" ~ "WSB")) %>%  -->
+<!--   mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>%  -->
+<!--   ggplot()+ -->
+<!--   aes( x = effect, -->
+<!--        y = value,  -->
+<!--        col = type, -->
+<!--        group = type)+ -->
+<!--   geom_point(size = 4, show.legend = FALSE)+ -->
+<!--   geom_line(show.legend = T, size = 1.2)+ -->
+<!--   theme_pubclean(base_size = 18)+ -->
+<!--   scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]),  -->
+<!--                       labels = c("npc_rna"="NPC","esc_rna"="ESC"))+ -->
+<!--   ylab("Haplotype effects")+ -->
+<!--   xlab("")+ -->
+<!--   #ylim(-2,1.1)+ -->
+<!--   geom_hline( yintercept = 0)+ -->
+<!--   theme(axis.line.x = element_blank(), -->
+<!--         axis.title = element_text(size = 18))+ -->
+<!--   labs(col ="QTL type")+ -->
+<!--   coord_flip( clip ="off")+ -->
+<!--   theme(legend.position = "none") -> Dyrk1a_haplotype_plot -->
+
+<!-- ``` -->
+
+
+<!-- ```{r Dyrk1a_lod_haps_plot} -->
+<!-- #| warning: false -->
+<!-- #| message: false -->
+<!-- #| fig-width: 10 -->
+<!-- #| fig-height: 5 -->
+
+<!-- ggarrange( Dyrk1a_lod_plot, Dyrk1a_haplotype_plot, widths = c(1, 0.5)) -->
+
+<!-- ``` -->
+
+<!-- ```{r dyrk1a_npc_plot} -->
+<!-- #| warning: false -->
+<!-- #| message: false -->
+<!-- #| fig-width: 8 -->
+<!-- #| fig-height: 4 -->
+
+
+<!-- Dyrk1a_npc_eff <- scan1blup( pheno = exprZ.npc_rna[,Dyrk1a_eqtl$ensembl_gene_id,drop=FALSE],  -->
+<!--                     genoprobs = probs.npc_rna[,"16"],  -->
+<!--                     kinship = kinship_loco.npc_rna[["16"]], -->
+<!--                     addcovar = covar.npc_rna) -->
+
+<!-- plot_coefCC( Dyrk1a_npc_eff, pmap, scan1_output =  Dyrk1a_npc_scan, main = "Dyrk1a eQTL scan in DO mNPCs", legend = "topleft") -->
+
+<!-- ``` -->
+
+
+<!-- ```{r dyrk1a_esc_plot} -->
+<!-- #| warning: false -->
+<!-- #| message: false -->
+<!-- #| fig-width: 8 -->
+<!-- #| fig-height: 6 -->
+
+
+<!-- Dyrk1a_esc_eff <- scan1blup( pheno = exprZ.esc_rna[,Dyrk1a_eqtl$ensembl_gene_id,drop=FALSE],  -->
+<!--                     genoprobs = probs.esc_rna[,"16"],  -->
+<!--                     kinship = kinship_loco.esc_rna[["16"]], -->
+<!--                     addcovar = covar.esc_rna) -->
+
+<!-- plot_coefCC( Dyrk1a_esc_eff, pmap, scan1_output =  Dyrk1a_esc_scan, main = "Dyrk1a eQTL scan in DO mESCs", legend = "topleft") -->
+
+
+<!-- ``` -->
+
+<!-- ```{r dyrk1a_full_genome_scans} -->
+<!-- #| warning: false -->
+<!-- #| message: false -->
+<!-- #| fig-width: 12 -->
+<!-- #| fig-height: 4 -->
+
+
+<!-- plot( Dyrk1a_npc_scan, pmap, main = "Dyrk1a eQTL scan in DO mNPCs", ylim= c(0,20)) -->
+<!-- abline(h = 7.5, col = "dark red", lty = 2) -->
+
+<!-- plot( Dyrk1a_esc_scan, pmap, main = "Dyrk1a eQTL scan in DO mESCs", ylim= c(0,20)) -->
+<!-- abline(h = 7.5, col = "dark red", lty = 2) -->
+
+<!-- ``` -->
+
+:::
+
+:::
+
 
 # Mediation analysis
 
+## Mediators of local eQTL 
+
+::: {.panel-tabset .nav-pills}
+
+### eQTL with best mediator NPC rna
+
+```{r local_eqtl_best_meds_npc}
+#| warning: false
+#| message: false
+
+peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna > 7.5, match %in% c("npc_rna","shared"), local.npc_rna ==T) -> npc_eqtl_local
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_local %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 2) %>% 
+  filter( target.symbol == mediator.symbol) %>% 
+  slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, mediator.symbol , target.chr, target.lod,mediation.lod,  type) %>% 
+  filter(type =="npc") %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+```
+
+
+### Mediation example
+
+Making a LOD plot for *Gbx2* with mediation results overlaid to examplify QTL mapping and mediaiton analysis. 
+
+```{r gbx2_plot_prep}
+#| warning: false
+#| message: false
+
+gbx2_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Gbx2")
+gbx2_scan <- scan1( pheno = exprZ.npc_rna[,gbx2_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+
+gbx2_meds <- eqtl_npc_rna_meds %>% 
+  filter( target.symbol =="Gbx2", qtl.chr == gbx2_eqtl$peak_chr) %>% mutate(type = "npc") %>% 
+  # rbind( eqtl_esc_rna_meds %>% filter( target.symbol =="Gbx2", qtl.chr == gbx2_eqtl$peak_chr) %>% mutate(type = "esc")) %>% 
+  mutate( mediator_mid = (mediator.start+mediator.end)/2)
+
+
+```
+
+
+```{r gbx2_exp_plot}
+#| warning: false
+#| message: false
+#| eval: false
+#| fig-width: 4
+#| fig-height: 3
+exprZ.npc_rna[,"ENSMUSG00000034486"] %>% 
+  as_tibble(rownames = "Gbx2") %>% 
+  ggplot( )+
+  aes(x = value)+
+  geom_histogram(binwidth = 0.1, col = qtl.colors[["npc_rna"]], fill = qtl.colors[["npc_rna"]], alpha = 0.5)+
+  theme_pubclean(base_size = 22)+
+  xlab("")+
+  ylab("")
+  
+
+```
+
+```{r gbx2_plot}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 4
+# lod plot + annotate the gene location too
+gbx2_scan %>% 
+  as.data.frame( ) %>% 
+  rename( eqtl = "ENSMUSG00000034486") %>% 
+  mutate( marker = dimnames(gbx2_scan)[[1]]) %>% 
+  left_join(map_dat2) -> gbx2_scan_df
+gbx2_scan_df$cumsum_pos_bp <- gbx2_scan_df$pos_bp + chrom_lens_offset[gbx2_scan_df$chr]
+
+gbx2_scan_df %>% 
+  #filter( chr == gbx2_eqtl$peak_chr) %>% 
+  ggplot()+
+    aes( 
+      x= cumsum_pos_bp,
+      y = eqtl
+      )+
+  geom_line( size = 1, col = qtl.colors[["npc_rna"]],alpha = 0.3)+
+  theme_pubclean( base_size = 18)+
+  xlab("Chr")+
+  #xlab(paste0("Chr ",gbx2_eqtl$peak_chr," location (bp)"))+
+  ylab( "LOD score")+
+  geom_segment( x = gbx2_eqtl$gene_start+chrom_lens_offset[gbx2_eqtl$gene_chr], 
+                xend = gbx2_eqtl$gene_end+chrom_lens_offset[gbx2_eqtl$gene_chr], 
+                y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= gbx2_eqtl$midpoint+chrom_lens_offset[gbx2_eqtl$gene_chr], y = -0.5, label ="Gbx2", size =6, fontface = 'italic')+
+  scale_x_discrete( name = "Chr",
+                    limits = chrom_lens_midpt, 
+                    labels = names(chrom_lens), 
+                    expand = expansion( mult = 0.05)) -> gbx2_lod_plot
+
+gbx2_meds_min <- gbx2_meds %>% 
+  slice_min( mediation.lod)
+gbx2_lod_plot+
+  geom_point( data = gbx2_meds, 
+              aes( x = mediator_mid+chrom_lens_offset[gbx2_eqtl$gene_chr],
+                   y = mediation.lod,
+                   col = type),
+              size = 4,
+              alpha = 0.9)+
+    scale_color_manual( values = c( "npc"=qtl.colors[["npc_rna"]]),
+                      labels = c( "npc"="NPC transcript"), name = "Mediator")+
+  annotate( "label", 
+            y = gbx2_meds_min$mediation.lod+0.1, 
+            x =gbx2_meds_min$mediator_mid+chrom_lens_offset[gbx2_eqtl$gene_chr]-1.2e08 ,
+            label = gbx2_meds_min$mediator.symbol, 
+            size = 6, 
+            col = qtl.colors[["npc_rna"]],
+            fontface = "italic")
+
+# overlay mediation lods as dots + add text for the best one
+
+```
+
+
+### eQTL with best mediator ESC rna
+
+
+```{r local_eqtl_best_meds_esc}
+#| warning: false
+#| message: false
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_local %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 2) %>% 
+  filter( target.symbol == mediator.symbol) %>% 
+  slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol,mediator.symbol, target.chr, target.lod, mediation.lod,  type) %>% 
+  filter(type =="esc")%>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+```
+
+
+### Mediation example
+
+Making a LOD plot for *Fancg* with mediation results overlaid to examplify QTL mapping and mediaiton analysis. 
+
+```{r fancg_plot_prep}
+#| warning: false
+#| message: false
+
+fancg_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Fancg", local.npc_rna == T)
+fancg_scan <- scan1( pheno = exprZ.npc_rna[,fancg_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+
+fancg_meds <- eqtl_esc_rna_meds %>% 
+  filter( target.symbol =="Fancg", qtl.chr == fancg_eqtl$peak_chr) %>% 
+  mutate( type = "esc") %>% 
+  rbind( eqtl_npc_rna_meds %>% filter(target.symbol =="Fancg", qtl.chr == fancg_eqtl$peak_chr) %>% mutate(type ="npc")) %>% 
+  mutate( mediator_mid = (mediator.start+mediator.end)/2)
+
+
+```
+
+```{r fancg_plot}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 5
+
+
+# lod plot + annotate the gene location too
+fancg_scan %>% 
+  as.data.frame( ) %>% 
+  rename( eqtl = "ENSMUSG00000028453") %>% 
+  mutate( marker = dimnames(fancg_scan)[[1]]) %>% 
+  left_join(map_dat2) -> fancg_scan_df
+fancg_scan_df$cumsum_pos_bp <- fancg_scan_df$pos_bp + chrom_lens_offset[fancg_scan_df$chr]
+
+fancg_scan_df %>% 
+  #filter( chr == fancg_eqtl$peak_chr) %>% 
+  ggplot()+
+    aes( 
+      x= cumsum_pos_bp,
+      y = eqtl
+      )+
+  geom_line( size = 1, col = qtl.colors[["npc_rna"]],alpha = 0.3)+
+  theme_pubclean( base_size = 18)+
+  xlab("Chr")+
+  #xlab(paste0("Chr ",fancg_eqtl$peak_chr," location (bp)"))+
+  ylab( "LOD score")+
+  geom_segment( x = fancg_eqtl$gene_start+chrom_lens_offset[fancg_eqtl$gene_chr], 
+                xend = fancg_eqtl$gene_end+chrom_lens_offset[fancg_eqtl$gene_chr], 
+                y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= fancg_eqtl$midpoint+chrom_lens_offset[fancg_eqtl$gene_chr], y = -0.5, label ="Fancg", size =6, fontface = 'italic')+
+  scale_x_discrete( name = "Chr",
+                    limits = chrom_lens_midpt, 
+                    labels = names(chrom_lens), 
+                    expand = expansion( mult = 0.05)) -> fancg_lod_plot
+
+fancg_meds_min <- fancg_meds %>% 
+  slice_min( mediation.lod)
+fancg_lod_plot+
+  geom_point( data = fancg_meds, 
+              aes( x = mediator_mid+chrom_lens_offset[fancg_eqtl$peak_chr],
+                   y = mediation.lod,
+                   col = type),
+              size = 4,
+              alpha = 0.8)+
+  scale_color_manual( values = c("esc"=qtl.colors[["esc_rna"]], "npc"=qtl.colors[["npc_rna"]]),
+                      labels = c("esc"="ESC transcript", "npc"="NPC transcript"), name = "Mediator")+
+  annotate( "label", 
+            y = fancg_meds_min$mediation.lod+0.1, 
+            x =fancg_meds_min$mediator_mid+chrom_lens_offset[fancg_eqtl$peak_chr]-1.3e08 ,
+            label = fancg_meds_min$mediator.symbol, 
+            size = 6, 
+            fontface = "italic",
+            col = qtl.colors[["esc_rna"]])
+
+# overlay mediation lods as dots + add text for the best one
+
+```
+
+:::
+
+## Mediators of distant eQTL 
+
+::: {.panel-tabset .nav-pills}
+
+### eQTL with best mediator NPC rna
+
+```{r dist_eqtl_best_meds_npc}
+#| warning: false
+#| message: false
+
+peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna > 7.5, match %in% c("shared","npc_rna"), local.npc_rna ==F) -> npc_eqtl_dist
+
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_dist %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 1) %>% 
+  #filter( target.symbol == mediator.symbol) %>% 
+  #slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, target.chr, mediator.symbol, mediator.chr, qtl.chr, target.lod,mediation.lod,  type) %>% 
+  filter(type =="npc")%>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+```
+
+```{r run_bmediatr_ex}
+#| warning: false
+#| message: false
+#| eval: false
+npc_eqtl_dist <- peaks.npc_rna.wEffs %>% 
+  filter( lod.npc_rna > 7.5, local.npc_rna ==F)
+# get distant eQTL with a good mediator ESC or NPC
+med_ex <- eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_dist %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  filter( mediation.lod < 0.4*(target.lod),
+          !str_detect(target.symbol, "-ps"),
+          !mediator.symbol %in% c("Cwc22","Gm13698","Gm13696","Gm13694") )%>% # get high lod drop examples and filter pseudogenes
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 1) %>%  # getting top 2 best mediators to test with bmediatR
+  filter(type =="npc") 
+    # select( target.symbol, target.chr, mediator.symbol, mediator.chr, qtl.chr, target.lod,mediation.lod,  type) %>% 
+  # distinct() %>%  
+  # mutate_if(is.numeric, round, 2) %>% 
+  # mutate( target.lod = round(target.lod, 2)) %>% 
+  # create_dt()
+
+# Let's run bmediatr on all of these! 
+#create an empty list to store results
+med_ex_results <- c()
+
+#create a for loop to run mediation with `bmediatR`
+for(i in 1:nrow(med_ex)){
+  gene_expression <- exprZ.npc_rna[,med_ex$target.id[i]]
+  marker <- map_dat2 %>%
+       mutate(diff = abs(pos_bp - med_ex$qtl.pos[i]*1e06)) %>%
+       slice_min(diff)
+  mediator <- exprZ.npc_rna[,colnames(exprZ.npc_rna) !=med_ex$target.id[i]]
+  genotype <- pull_genoprobpos(
+    genoprobs = probs.npc_rna,
+    marker = marker$marker
+  )
+  bmediatr_scan <- bmediatR(
+    y = gene_expression,
+    M = mediator,
+    X = genotype,
+    Z = covar.npc_rna
+  )
+  med_ex_results[[i]] <- bmediatr_scan
+}
+
+med_ex_post_odds <- c()
+for(i in 1:length(med_ex_results)){
+  med_ex_post_odds[[i]] <- (med_ex_results[[i]]$ln_post_odds)[med_ex$mediator.id[i],]
+ 
+}
+
+mediation_results_odds <- do.call(rbind, med_ex_post_odds) %>% 
+  as_tibble() %>%
+  cbind( med_ex 
+         ) %>% 
+  pivot_longer(mediation:y_depends_m, names_to = "mediation_type", values_to = "odds") 
+  
+
+save( mediation_results_odds, file = here("_data","NPC_dist_eQTL_bmediatr_ex.RData"))
+```
+
+
+### Bmediatr with NPC-NPC mediation examples
+
+```{r bmediatr_npc_npc_ex_plot}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 7
+
+load(here("_data","NPC_dist_eQTL_bmediatr_ex.RData"))
+
+mediation_results_odds %>% 
+  filter( mediation_type %in% c("colocal","complete","mediation","partial")) %>% 
+  ggplot()+
+  aes(x = target.symbol,
+      y = odds,
+      col = mediation_type,
+      fill = mediation_type)+
+  geom_point()+
+  theme_pubclean( base_size = 14)+
+  theme(legend.position = "right",
+        axis.text.x = element_blank())+
+  ylim(-60,60)+
+  ylab("Log Posterior Odds")+
+  xlab("")+
+  ggtitle("NPC mediation examples")
+
+```
+
+
+```{r bmediatr_npc_npc_ex_table}
+#| warning: false
+#| message: false
+
+#load(here("_data","NPC_dist_eQTL_bmediatr_ex.RData"))
+
+mediation_results_odds %>% 
+  filter( mediation_type %in% c("mediation","partial","complete"), 
+          odds > 10) %>% 
+  select( target.symbol, qtl.chr, mediator.symbol, target.lod, mediation.lod, mediation_type, `Ln(odds)`=odds) %>% 
+  arrange(desc(`Ln(odds)`)) %>% 
+  mutate_if( is.numeric, round, 2) %>% 
+  create_dt()
+
+```
+
+
+#### Highlight: Slc38a10 mediates Sfpq, Rdx, D16Ertd472e distant eQTLs on chr 11
+
+All three distant eQTL have negative lod for partial mediation and colocal models, moderate positive lod for complete and high positive lod for mediation suggesting complete mediation. 
+
+```{r bmediatr_npc_highlights}
+#| warning: false
+#| message: false
+
+
+# overlapping scans for all 4 genes on chr11 + add Slc38a10 gene on the genome
+# get scans:
+ex_qtls <- peaks.npc_rna.wEffs %>% 
+  filter( mgi_symbol %in% c("Slc38a10", "Sfpq","Rdx","D16Ertd472e"),
+          peak_chr == 11, 
+          lod.npc_rna>7.5)
+
+qtl_scans <- scan1(genoprobs = probs.npc_rna, 
+                   pheno = exprZ.npc_rna[,ex_qtls$ensembl_gene_id,drop = F], 
+                   kinship = kinship_loco.npc_rna,
+                   addcovar = covar.npc_rna)
+
+qtl_scans %>% 
+  as_tibble( rownames = "marker") %>% 
+  left_join( map_dat2) %>% 
+  filter( chr == 11) %>% 
+  pivot_longer( cols = 2:5, 
+                names_to = "ensembl_gene_id", 
+                values_to = "lod") %>% 
+  left_join( all.genes %>% select(ensembl_gene_id, mgi_symbol)) %>%  
+  ggplot()+
+    aes( 
+      x= pos_bp/1e06,
+      y = lod,
+      col = mgi_symbol
+      )+
+    geom_line( size = 1)+
+    theme_pubclean( base_size = 18)+
+  xlab("Chr 11 location (Mbp)")+
+  ylab( "LOD score")+
+  labs(col = "Gene name")+
+  xlim(50,125)+
+  geom_segment( x = ex_qtls$gene_start[2]/1e06, xend = ex_qtls$gene_end[2]/1e06 , y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= ex_qtls$midpoint[2]/1e06, y = -0.8, label ="Slc38a10", size =6, fontface = "italic")-> qtl_ex_lod_plot
+
+
+# allele effect plot
+
+ex_qtls %>% 
+  select( mgi_symbol, paste0(LETTERS[1:8], ".npc_rna")) %>% 
+  pivot_longer( cols = paste0(LETTERS[1:8], ".npc_rna"), 
+          names_to = "effect",
+          values_to = "value") %>% 
+  separate(effect, sep ="[.]", into = c("effect","type")) %>% 
+  mutate( effect = case_when( effect == "A" ~ "AJ",
+                              effect == "B" ~ "B6",
+                              effect == "C" ~ "129",
+                              effect == "D" ~ "NOD",
+                              effect == "E" ~ "NZO",
+                              effect == "F" ~ "CAST",
+                              effect == "G" ~ "PWK",
+                              effect == "H" ~ "WSB")) %>% 
+  ggplot()+
+  aes( x = effect,
+       y = value, 
+       col = mgi_symbol,
+       group = mgi_symbol)+
+  geom_point(size = 4, show.legend = FALSE)+
+  geom_line(show.legend = T, size = 1.2)+
+  theme_pubclean(base_size = 18)+
+  ylab("Haplotype effects")+
+  xlab("")+
+  #ylim(-2,1.1)+
+  geom_hline( yintercept = 0)+
+  theme(axis.line.x = element_blank(),
+        axis.title = element_text(size = 18))+
+  labs(col ="QTL type")+
+  coord_flip( clip ="off")+
+  theme(legend.position = "none") -> qtl_ex_haplotype_plot
+
+
+```
+
+
+
+```{r npc_qtl_ex_lod_haps_plot}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 5
+ggarrange( qtl_ex_lod_plot, qtl_ex_haplotype_plot, widths = c(1, 0.5))
+
+```
+
+```{r npc_eqtl_ex_bmediatr_plots}
+#| warning: false
+#| message: false
+#| fig-width: 5
+#| fig-height: 4
+
+
+mediation_results_odds %>% 
+  filter(target.symbol %in% c("Sfpq","Rdx","D16Ertd472e")) %>% 
+  filter( mediation_type %in% c("colocal","complete","mediation","partial","reactive")) %>% 
+  ggplot()+
+  aes(x = target.symbol,
+      y = odds,
+      col = mediation_type,
+      fill = mediation_type)+
+  geom_point( size = 3)+
+  theme_pubclean( base_size = 14)+
+  theme(legend.position = "right")+
+  ylim(-50,20)+
+  ylab("Log Posterior Odds")+
+  xlab("")
+
+```
+
+Association mapping for Slc38a10 to identify SNPs:
+
+```{r as_for_bmediat_highlights}
+#| warning: false
+#| message: false
+
+pmap_Mbp <- lapply( pmap, function(x){x/1e06})
+
+slc_qtl <- peaks.npc_rna.wEffs %>% 
+  filter( mgi_symbol %in% c("Slc38a10"),
+          peak_chr == 11, 
+          lod.npc_rna>7.5)
+
+probs <- probs.npc_rna
+attr(probs, "is_x_chr") <- NULL
+slc_as <- scan1snps(genoprobs = probs, 
+                     map = pmap_Mbp, 
+                     pheno = exprZ.npc_rna[,slc_qtl$ensembl_gene_id,drop = F],
+                     kinship = kinship_loco.npc_rna[[slc_qtl$peak_chr]],
+                     addcovar = covar.npc_rna, 
+                     chr = as.character(slc_qtl$peak_chr),
+                     query_func = query_variants,
+                     start = slc_qtl$interp_bp_peak.npc_rna/1e06 - 5,
+                     end = slc_qtl$interp_bp_peak.npc_rna/1e06 + 5,
+                     keep_all_snps = F
+                    )
+
+
+genes <- query_genes( slc_qtl$peak_chr, 
+                      slc_qtl$interp_bp_peak.npc_rna/1e06 - 5, 
+                      slc_qtl$interp_bp_peak.npc_rna/1e06 + 5) %>%  
+  distinct()
+
+
+```
+
+
+```{r slc_as_plot, fig.width=12, fig.height=8}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 8
+
+
+par(mar=c(4.1, 4.1,2, 1))
+plot(slc_as$lod,
+     slc_as$snpinfo,
+     #drop_hilit = 1,
+     genes = genes, cex.lab =1.5)
+
+```
+
+
+SNPs with matching split in the area:
+
+```{r slc_as_table}
+#| warning: false
+#| message: false
+
+slc_as %>% 
+   as.data.frame() %>% 
+  filter( ENSMUSG00000061306 > 5) %>% 
+  select( LOD = ENSMUSG00000061306,
+          snp_id = snpinfo.snp,
+          pos = snpinfo.pos,
+          alleles = snpinfo.alleles,
+          consequence = snpinfo.consequence,
+          ensembl_gene_id = snpinfo.ensembl_gene,
+          `129` = snpinfo.129S1_SvImJ,
+          `AJ` = snpinfo.A_J,
+          `CAST` = snpinfo.CAST_EiJ,
+          `NZO` = snpinfo.NZO_HlLtJ,
+          `PWK` = snpinfo.PWK_PhJ,
+          `B6` = snpinfo.C57BL_6J,
+          `NOD` = snpinfo.NOD_ShiLtJ,
+          `WSB` = snpinfo.WSB_EiJ
+          ) %>% 
+  filter( `129`==`CAST`, `CAST` == `PWK` & `WSB` == `B6`, `B6`==`NZO`, `B6`==`NOD`) %>%
+  left_join(., select(all.genes, ensembl_gene_id, mgi_symbol) %>%  distinct() ) %>% 
+  mutate_if(is.numeric, round, 1) %>% 
+  arrange(desc(LOD)) %>% 
+  create_dt()
+
+```
+
+#### Higlight: Zfp943 mediating Ppp5c distant eQTL on chr 17
+
+
+
+<!-- ## Mediation example: Ezh1 mediated by Pign -->
+
+<!-- I am getting many genes with higher odds that are >10Mb away from the eQTL peak. -->
+
+<!-- ```{r, fig.width=10, fig.height=5, warning=FALSE, message=FALSE} -->
+
+<!-- # run bmediatR -->
+<!-- ezh1_eqtl <- peaks.npc_rna.wesc.overlap %>%  -->
+<!--   filter( lod.npc_rna >7.5, mgi_symbol =="Ezh1", local.npc_rna == F) -->
+
+<!-- marker <- map_dat2 %>% -->
+<!--        mutate(diff = abs(pos_bp - ezh1_eqtl$interp_bp_peak.npc_rna)) %>% -->
+<!--        slice_min(diff) -->
+<!-- genotype <- pull_genoprobpos( -->
+<!--     genoprobs = probs.npc_rna, -->
+<!--     marker = marker$marker -->
+<!--   ) -->
+
+<!-- ezh1_bmediatr_scan <- bmediatR( -->
+<!--     y = exprZ.npc_rna[,ezh1_eqtl$ensembl_gene_id,drop=FALSE], -->
+<!--     M = exprZ.npc_rna[,colnames(exprZ.npc_rna) != ezh1_eqtl$ensembl_gene_id], -->
+<!--     X = genotype,  -->
+<!--     Z = covar.npc_rna -->
+<!--   ) -->
+
+<!-- Pign_details <- npc.genes %>% -->
+<!--    filter(mgi_symbol=="Pign")  -->
+
+<!-- # exp(ezh1_bmediatr_scan$ln_post_c)[Pign_details$ensembl_gene_id,] -->
+<!-- # (ezh1_bmediatr_scan$ln_post_odds)[Pign_details$ensembl_gene_id,] -->
+
+<!-- # plot_posterior_bar(ezh1_bmediatr_scan, med_annot = npc.genes %>% mutate( middle = midpoint ,symbol = mgi_symbol), med_var = "ensembl_gene_id", mediator_id = Pign_details$ensembl_gene_id) -->
+<!-- plot_posterior_odds(bmediatR_object = ezh1_bmediatr_scan, model_type = "mediation",med_annot = npc.genes %>% mutate( chr = gene_chr, middle = midpoint ,symbol = mgi_symbol), med_var = "ensembl_gene_id", bgcol = "white", altbgcol = "white", include_chr = 1, label_thresh = 6, label_thresh_greater_than = T) -->
+
+
+<!-- ``` -->
+
+
+<!-- ## Mediation example: Pitpnc1 mediating Dtna, Etv5, Sumf1, Srpk2 -->
+
+<!-- The only one that shows odds >0 for mediation is Srpk2, plotted below.  -->
+
+<!-- ```{r, warning=FALSE, message=FALSE} -->
+
+<!-- # run bmediatr -->
+<!-- med_ex <- eqtl_npc_rna_meds %>%  -->
+<!--   filter( target.symbol %in% c("Dtna","Etv5", "Sumf1", "Srpk2"), qtl.chr ==11) -->
+
+<!-- #create an empty list to store results -->
+<!-- med_ex_results <- c() -->
+
+<!-- #create a for loop to run mediation with `bmediatR` -->
+<!-- for(i in 1:nrow(med_ex)){ -->
+<!--   gene_expression <- exprZ.npc_rna[,med_ex$target.id[i]] -->
+<!--   marker <- map_dat2 %>% -->
+<!--        mutate(diff = abs(pos_bp - med_ex$qtl.pos[i]*1e06)) %>% -->
+<!--        slice_min(diff) -->
+<!--   mediator <- exprZ.npc_rna[,colnames(exprZ.npc_rna) !=med_ex$target.id[i]] -->
+<!--   genotype <- pull_genoprobpos( -->
+<!--     genoprobs = probs.npc_rna, -->
+<!--     marker = marker$marker -->
+<!--   ) -->
+<!--   bmediatr_scan <- bmediatR( -->
+<!--     y = gene_expression, -->
+<!--     M = mediator, -->
+<!--     X = genotype,  -->
+<!--     Z = covar.npc_rna -->
+<!--   ) -->
+<!--   med_ex_results[[i]] <- bmediatr_scan -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r, fig.width=10, fig.height=5, warning=FALSE, message=FALSE} -->
+<!-- pitpnc1_dets <- all.genes %>%  -->
+<!--   filter( mgi_symbol=="Pitpnc1") -->
+
+<!-- #med_ex_results[[4]]$ln_post_odds[pitpnc1_dets$ensembl_gene_id,] -->
+
+<!-- plot_posterior_odds(bmediatR_object = med_ex_results[[4]],  -->
+<!--                     model_type = "mediation", -->
+<!--                     med_annot = npc.genes %>%  -->
+<!--                       mutate( chr = gene_chr, middle = midpoint ,symbol = mgi_symbol),  -->
+<!--                     med_var = "ensembl_gene_id",  -->
+<!--                     bgcol = "white", altbgcol = "white",  -->
+<!--                     include_chr = 11, label_thresh = 10, label_thresh_greater_than = T) -->
+
+<!-- ``` -->
+
+### eQTL with best mediator ESC rna
+
+```{r eqtl_best_meds_esc}
+#| warning: false
+#| message: false
+
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_dist %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 1) %>% 
+  #filter( target.symbol == mediator.symbol) %>% 
+  #slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, target.chr, mediator.symbol, mediator.chr, qtl.chr, target.lod,mediation.lod,  type) %>% 
+  filter(type =="esc") %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+  
+```
+
+For any of these NPC eQTL are we getting a best mediator that is not expressed in NPCs but is expressed in ESCs? Yes!
+
+```{r eqtl_best_meds_follow_up_table}
+#| warning: false
+#| message: false
+
+eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_dist %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 1) %>% 
+  #filter( target.symbol == mediator.symbol) %>% 
+  #slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, target.chr, mediator.symbol, mediator.id, mediator.chr, qtl.chr, target.lod,mediation.lod,  type) %>% 
+  filter(type =="esc") %>% 
+  filter( !mediator.symbol %in% npc.genes$mgi_symbol) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate( target.lod = round(target.lod, 2)) %>% 
+  create_dt()
+
+
+```
+
+
+
+Let's make some interactive plots to look at mediation results with large lod drops:
+
+```{r eqtl_best_meds_follow_up}
+#| warning: false
+#| message: false
+
+esc_med_exs <- eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_dist %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 1) %>% 
+  filter(type =="esc",
+         !mediator.symbol %in% npc.genes$mgi_symbol, # mediator not in npc gene list
+          mediation.lod < 0.4*(target.lod),
+          !str_detect(target.symbol, "-ps"),
+          mediator.symbol != "Cwc22") # get high lod drop examples and filter pseudogenes
+
+
+
+```
+
+
+### Mediation example: Zfp51
+
+```{r Zfp51_plot_prep}
+#| warning: false
+#| message: false
+Zfp51_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.npc_rna >7.5, mgi_symbol =="Zfp51", local.npc_rna == F)
+Zfp51_scan <- scan1( pheno = exprZ.npc_rna[,Zfp51_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+
+Zfp51_meds <- eqtl_esc_rna_meds %>% 
+  filter( target.symbol =="Zfp51", qtl.chr == Zfp51_eqtl$peak_chr) %>% 
+  mutate( type = "esc") %>% 
+  rbind( eqtl_npc_rna_meds %>% filter(target.symbol =="Zfp51", qtl.chr == Zfp51_eqtl$peak_chr) %>% mutate(type ="npc")) %>% 
+  mutate( mediator_mid = (mediator.start+mediator.end)/2)
+
+
+```
+
+```{r Zfp51_plot}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 5
+
+
+# lod plot + annotate the gene location too
+Zfp51_scan %>% 
+  as.data.frame( ) %>% 
+  rename( eqtl = Zfp51_eqtl$ensembl_gene_id) %>% 
+  mutate( marker = dimnames(Zfp51_scan)[[1]]) %>% 
+  left_join(map_dat2) -> Zfp51_scan_df
+Zfp51_scan_df$cumsum_pos_bp <- Zfp51_scan_df$pos_bp + chrom_lens_offset[Zfp51_scan_df$chr]
+
+Zfp51_scan_df %>% 
+  #filter( chr == Zfp51_eqtl$peak_chr) %>% 
+  ggplot()+
+    aes( 
+      x= cumsum_pos_bp,
+      y = eqtl
+      )+
+  geom_line( size = 1, col = qtl.colors[["npc_rna"]],alpha = 0.3)+
+  theme_pubclean( base_size = 18)+
+  xlab("Chr")+
+  #xlab(paste0("Chr ",Zfp51_eqtl$peak_chr," location (bp)"))+
+  ylab( "LOD score")+
+  geom_segment( x = Zfp51_eqtl$gene_start+chrom_lens_offset[Zfp51_eqtl$gene_chr], 
+                xend = Zfp51_eqtl$gene_end+chrom_lens_offset[Zfp51_eqtl$gene_chr], 
+                y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= Zfp51_eqtl$midpoint+chrom_lens_offset[Zfp51_eqtl$gene_chr], y = -0.5, label ="Zfp51", size =6, fontface = 'italic')+
+  scale_x_discrete( name = "Chr",
+                    limits = chrom_lens_midpt, 
+                    labels = names(chrom_lens), 
+                    expand = expansion( mult = 0.05)) -> Zfp51_lod_plot
+
+Zfp51_meds_min <- Zfp51_meds %>% 
+  slice_min( mediation.lod)
+Zfp51_lod_plot+
+  geom_point( data = Zfp51_meds, 
+              aes( x = mediator_mid+chrom_lens_offset[Zfp51_eqtl$peak_chr],
+                   y = mediation.lod,
+                   col = type),
+              size = 4,
+              alpha = 0.8)+
+  scale_color_manual( values = c("esc"=qtl.colors[["esc_rna"]], "npc"=qtl.colors[["npc_rna"]]),
+                      labels = c("esc"="ESC transcript", "npc"="NPC transcript"), name = "Mediator")
+
+# overlay mediation lods as dots + add text for the best one
+
+```
+
+<!-- Let's look at bmediatR results for ZFP51: -->
+
+<!-- ```{r, fig.height=4, fig.width=5} -->
+
+<!-- Zfp51_meds %>%  -->
+<!--   slice_min( mediation.lod, n= 10) -> Zfp51_meds_min10 -->
+
+<!-- zfp51_i <- which(data$target.symbol =="Zfp51") -->
+
+<!-- (results[[zfp51_i]]$ln_post_odds)[Zfp51_meds_min10$mediator.id, ] %>%  -->
+<!--   as_tibble( rownames = "mediator.id") %>%  -->
+<!--   left_join( Zfp51_meds_min10) %>%  -->
+<!--   pivot_longer(2:9, names_to = "group", values_to = "odds") %>% -->
+<!--   filter( group =="mediation") %>%  -->
+<!--   mutate( lod_drop =target.lod - mediation.lod) %>%  -->
+<!--   ggplot()+ -->
+<!--   aes(x = odds, -->
+<!--       y = lod_drop)+ -->
+<!--   geom_point()+ -->
+<!--   geom_text(  aes(label = mediator.symbol), nudge_x = 0.22, nudge_y = 0.04)+ -->
+<!--   theme_pubclean()+ -->
+<!--   #ylim(6,8)+ -->
+<!--   #xlim(0, 5.5)+ -->
+<!--   xlab("Log posterior odds for mediation (partial or complete)")+ -->
+<!--   ylab("Drop in LOD score with mediation") -->
+
+<!-- ``` -->
+
+<!-- ```{r, fig.height=5, fig.width=10} -->
+
+<!-- plot_posterior_odds(bmediatR_object = results[[zfp51_i]],  -->
+<!--                     model_type = "mediation", -->
+<!--                     med_annot = npc.genes %>%  -->
+<!--                       mutate( chr = gene_chr, middle = midpoint ,symbol = mgi_symbol),  -->
+<!--                     med_var = "ensembl_gene_id",  -->
+<!--                     bgcol = "white", altbgcol = "white",  -->
+<!--                     include_chr = Zfp51_eqtl$peak_chr[1], label_thresh = 0, label_thresh_greater_than = T) -->
+
+<!-- ``` -->
+
+### BmediatR doesn't work with ESC expression
+
+Can bmediatR help us get directionality? We don't get any with high odds! 
+
+```{r bmediatr_w_esc_results}
+#| warning: false
+#| message: false
+
+
+# #create an empty list to store results
+# results <- c()
+# 
+# #create a for loop to run mediation with `bmediatR`
+# for(i in 1:nrow(data)){
+#   gene_expression <- exprZ.npc_rna[,data$target.id[i]]
+#   marker <- map_dat2 %>%
+#        mutate(diff = abs(pos_bp - data$interp_bp_peak.npc_rna[i])) %>%
+#        slice_min(diff)
+#   mediator <- exprZ.esc_rna[,colnames(exprZ.esc_rna) !=data$target.id[i]]
+#   genotype <- pull_genoprobpos(
+#     genoprobs = probs.npc_rna,
+#     marker = marker$marker
+#   )
+#   bmediatr_scan <- bmediatR(
+#     y = gene_expression,
+#     M = mediator,
+#     X = genotype, 
+#     Z = covar.npc_rna
+#   )
+#   results[[i]] <- bmediatr_scan
+# }
+# 
+# save(results, file = here("data","bmediatr_results_mNPC_eQTL_wESC.RData"))
+
+
+load(here("_data","bmediatr_results_mNPC_eQTL_wESC.RData")) #results
+
+
+data <- eqtl_npc_rna_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind( eqtl_esc_rna_meds %>% mutate( type ="esc")) %>% 
+  inner_join(
+    npc_eqtl_dist %>% select( target.id = ensembl_gene_id, qtl.chr = peak_chr, target.lod = lod.npc_rna)
+  ) %>% 
+  group_by( target.id, target.lod, qtl.chr) %>% 
+  slice_min( mediation.lod, n = 1) %>% 
+  #filter( target.symbol == mediator.symbol) %>% 
+  #slice_min( mediation.lod) %>% 
+  arrange( desc(target.lod)) %>% 
+  select( target.symbol, target.chr, mediator.symbol, mediator.id, mediator.chr, qtl.chr, target.lod,mediation.lod,  type) %>% 
+  filter(type =="esc") %>% 
+  filter( !mediator.symbol %in% npc.genes$mgi_symbol)
+#find posterior probabilities 
+post_results_c <- c()
+post_results_odds <- c()
+
+for (i in 1:length(results)) {
+  post_results_c[[i]] <- exp(results[[i]]$ln_post_c)[data$mediator.id[i], ]
+  post_results_odds[[i]] <- (results[[i]]$ln_post_odds)[data$mediator.id[i], ]
+}
+
+```
+
+
+```{r bmediatr_w_esc_plot}
+#| warning: false
+#| message: false
+#| fig-width: 6
+#| fig-height: 8
+
+mediation_results_odds <- do.call(rbind, post_results_odds) %>%
+  as_tibble() %>%
+  cbind( data
+         ) %>%
+  pivot_longer(1:8, names_to = "group", values_to = "odds") 
+
+mediation_results_odds %>%
+  filter( !str_detect(group, "y_"),
+          !group %in% c("mediation_or_colocal","reactive")) %>% 
+  ggplot()+
+  aes(x = odds,
+      y = target.id,
+      col = group,
+      fill = group)+
+  geom_point()+
+  theme_pubclean()+
+  theme(legend.position = "right",
+        axis.text.y = element_blank())+
+  #xlim(0,1)+
+  xlab("Log Posterior Odds")+
+  ylab("")+
+  #scale_x_log10()+
+  ggtitle("Mediation with mNPC eQTL wESC Expression")
+
+```
+
+:::
+
+
 # Distant eQTL hotspots
+
+```{r transbands_lod6}
+#| warning: false
+#| message: false
+
+
+# eQTL map for NPC rna
+# prep the objects
+#map_dat2 <- map_dat2 %>% mutate(pos_bp = as.numeric(pos_bp), pos_cM = as.numeric(pos))
+map_dat2$chromF <- factor(map_dat2$chrom, levels = c(as.character(1:19), "X"))
+chrom_markers <- select(map_dat2, chromF, n) %>%
+  rename(chrom = chromF) %>%
+  group_by(chrom) %>%
+  summarize(start = min(n), end = max(n)) %>%
+  GenomicRanges::GRanges()
+windows <- unlist(GenomicRanges::slidingWindows(chrom_markers, width = 50, step = 10))
+markers_bynum <- select(map_dat2, chrom, n) %>%
+  dplyr::rename(start = n) %>%
+  mutate(end = start) %>%
+  GenomicRanges::GRanges()
+
+distant_esc_rna <- filter(peaks.esc_rna.wEffs, lod.esc_rna > 7.5, !is.na(local.esc_rna) & !(local.esc_rna)) %>%
+  select(peak_chr, interp_bp_peak.esc_rna) %>%
+  dplyr::rename(chrom = peak_chr, end = interp_bp_peak.esc_rna) %>%
+  mutate(start = end) %>%
+  GenomicRanges::GRanges()
+distant_esc_rna_lod6 <- filter(peaks.esc_rna.wEffs, lod.esc_rna > 6, !is.na(local.esc_rna) & !(local.esc_rna)) %>%
+  select(peak_chr, interp_bp_peak.esc_rna) %>%
+  dplyr::rename(chrom = peak_chr, end = interp_bp_peak.esc_rna) %>%
+  mutate(start = end) %>%
+  GenomicRanges::GRanges()
+
+distant_npc_rna <- filter(peaks.npc_rna.wEffs, lod.npc_rna > 7.5, !is.na(local.npc_rna) & !(local.npc_rna)) %>%
+  select(peak_chr, interp_bp_peak.npc_rna) %>%
+  dplyr::rename(chrom = peak_chr, end = interp_bp_peak.npc_rna) %>%
+  mutate(start = end) %>%
+  GenomicRanges::GRanges()
+distant_npc_rna_lod6 <- filter(peaks.npc_rna.wEffs, lod.npc_rna > 6, !is.na(local.npc_rna) & !(local.npc_rna)) %>%
+  select(peak_chr, interp_bp_peak.npc_rna) %>%
+  dplyr::rename(chrom = peak_chr, end = interp_bp_peak.npc_rna) %>%
+  mutate(start = end) %>%
+  GenomicRanges::GRanges()
+
+markers <- select(map_dat2, chrom, pos_bp) %>%
+  dplyr::rename(start = pos_bp) %>%
+  mutate(end = start) %>%
+  GenomicRanges::GRanges() # length 69,005
+esc_hotspot <- GenomicRanges::nearest(distant_esc_rna, markers)
+esc_hotspot_lod6 <- GenomicRanges::nearest(distant_esc_rna_lod6, markers)
+npc_hotspot <- GenomicRanges::nearest(distant_npc_rna, markers)
+npc_hotspot_lod6 <- GenomicRanges::nearest(distant_npc_rna_lod6, markers)
+# assert_that(noNA(x), noNA(y))
+# assert_that(noNA(x))
+windows$distant_esc_rna <- GenomicRanges::countOverlaps(windows, markers_bynum[esc_hotspot])
+windows$distant_esc_rna <- GenomicRanges::countOverlaps(windows, markers_bynum[esc_hotspot_lod6])
+windows$distant_npc_rna <- GenomicRanges::countOverlaps(windows, markers_bynum[npc_hotspot])
+windows$distant_npc_rna_lod6 <- GenomicRanges::countOverlaps(windows, markers_bynum[npc_hotspot_lod6])
+window_counts <- tibble(
+  chrom = as.character(GenomicRanges::seqnames(windows)),
+  start = GenomicRanges::start(windows),
+  end = GenomicRanges::end(windows),
+  distant_esc_rna = windows$distant_esc_rna, 
+  distant_npc_rna = windows$distant_npc_rna,
+  distant_npc_rna_lod6 = windows$distant_npc_rna_lod6
+)
+
+# plotting
+map_dat2 <- map_dat2 %>% mutate( pos_cM = as.numeric(pos))
+mm <- match(window_counts$start, map_dat2$n)
+m2 <- match(window_counts$end, map_dat2$n)
+window_counts$pos_cM_start <- map_dat2$pos_cM[mm]
+window_counts$pos_bp_start <- map_dat2$pos_bp[mm]
+window_counts$pos_cM_end <- map_dat2$pos_cM[m2]
+window_counts$pos_bp_end <- map_dat2$pos_bp[m2]
+window_counts <- window_counts %>%
+  mutate(midpoint = (pos_cM_end + pos_cM_start) / 2, 4)
+
+x <- select(window_counts, chrom, starts_with("pos_bp"), starts_with("distant")) %>%
+  filter(
+    #distant_esc_rna > quantile(distant_esc_rna,0.995) | 
+    #distant_npc_rna_lod6 > quantile(distant_npc_rna_lod6, 0.995) | 
+           distant_npc_rna > quantile(distant_npc_rna,0.995) )
+bands.esc.npc.rna <- x %>%
+  rename(start = pos_bp_start, end = pos_bp_end) %>%
+  GenomicRanges::GRanges() %>%
+  GenomicRanges::reduce()
+# reduce collapses overlapping windows into one big window. Works perfectly here.
+bands.esc.npc.rna$distant_esc_rna <- GenomicRanges::countOverlaps(bands.esc.npc.rna, distant_esc_rna)
+bands.esc.npc.rna$distant_esc_rna_lod6<- GenomicRanges::countOverlaps(bands.esc.npc.rna, distant_esc_rna_lod6)
+bands.esc.npc.rna$distant_npc_rna <- GenomicRanges::countOverlaps(bands.esc.npc.rna, distant_npc_rna)
+bands.esc.npc.rna$distant_npc_rna_lod6 <- GenomicRanges::countOverlaps(bands.esc.npc.rna, distant_npc_rna_lod6)
+
+
+# plot(todrawR+zero+sp, mapMarkers, ylab="Number of distant QTL", col=qtl.colors[2], 
+#     ylim=c(-2*sp, 800+2*sp), yaxt='n', bgcolor='gray90', altbgcolor='white')
+# plot(zero-sp-todrawA, mapMarkers, add=TRUE, col=qtl.colors[1])
+# axis(2, at=seq(0, 800, by=200)+sp, labels=c("400", "200", "0", "200", "400"))
+# text(1600, 780, "ESC eQTL LOD>6", cex=1.2, col=qtl.colors[2], adj=c(1, 1))
+# text(1600, 30, "NPC eQTL LOD>6", cex=1.2, col=qtl.colors[1], adj=c(1, 0))
+
+```
+
+To identify eQTL trans-bands, aka "hotspots" - regions of the genome that appear to modulate the expression of many genes and likely harbor an important transcriptional regulator - I broke up the genome into smaller, overlapping windows (1cM width, 0.25cM shifts) and counted the number of distant NPC eQTLs that mapped to that window. We defined a hotspot as any window that contained `r quantile((select(window_counts, chrom, starts_with("pos_bp"), starts_with("distant")))$distant_npc_rna,0.995)[[1]]` or more distant eQTL (the top 0.05% value for distant eQTL), and then collapsed overlapping and adjacent windows into one larger window to estimate the critical interval for each hotspot.
+
+```{r}
+#| warning: false
+#| message: false
+
+bands.esc.npc.rna  %>% 
+  as_tibble() %>% 
+  mutate( chr = seqnames) -> bands.esc.npc.rna
+bands.esc.npc.rna %>% 
+    filter(distant_npc_rna > 20)  %>% 
+  select( Chromosome = seqnames, `Start (bp)`=start, `End (bp)`=end, `# of distant eQTL (LOD >7.5)` = distant_npc_rna, 
+          `# of distant eQTL (LOD >6)` = distant_npc_rna_lod6 ) %>% 
+  create_dt()
+
+```
+
+## eQTL hotspot on chromosome 1 
+
+::: {.panel-tabset .nav-pills}
+
+**SUMMARY:** We identified a `r round((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 1))$width/1e06,1)`Mb wide NPC-specific eQTL trans-band on Chromosome 1 at `r formatC((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 1))$start,big.mark=",")`-`r formatC((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 1))$end,big.mark=",")` bp that contains `r formatC((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 1))$distant_npc_rna_lod6,big.mark=",")` NPC eQTL at the suggestive threshold of LOD \> 6. Target genes within the trans-band show an over-representation for genes involved in RNA splicing and the spindle assembly checkpoint; most of these genes are downregulated in NPCs relative to ESCs. Inferred founder allele effects of the target NPC eQTL show a 4:4 pattern where the wild-derived strains WSB and PWK group with laboratory strains A/J and NZO, while the wild-derived CAST strain groups with the laboratory strains B6, NOD, and 129. Surprisingly, comparison of mediation scores for the eQTLs (shown as LOD drops) in this NPC-specific trans-band suggest that transcript abundance in the ESCs is actually a better mediator of the eQTLs than the transcript abundance in the NPCs themselves. This suggests temporal regulation where the underlying causal variant directly affects expression of a transcriptional regulator of cell fate in the ESCs, but then its downstream trans regulatory effects are only observed later in the NPCs. *Pign* ESC transcript abundance is identified as the best candidate regulator for this trans-band; it is the best mediator for 157 out of 322 total eQTL, and *Pign* has a local eQTL with a similar founder allele grouping to what is observed for the NPC trans-band. NPC transcript abundance of Pign is also identified as a good candidate mediator, but does not perform as well as ESC transcript of *Pign*.
+
+```{r}
+#| warning: false
+#| message: false
+#| eval: false
+bands.esc.npc.rna %>% filter(seqnames==1)
+
+```
+
+```{r chr1_eqtl}
+#| warning: false
+#| message: false
+
+
+chr1.npc.eQTL1 <- peaks.npc_rna.wesc.overlap %>% 
+  filter( peak_chr == 1) %>% 
+  select( -peak_cM.npc_rna) %>% 
+  left_join(peaks.npc_rna.wEffs) %>% 
+  filter( lod.npc_rna > 6 & !local.npc_rna & !is.na(local.npc_rna) &
+            interp_bp_peak.npc_rna >= filter( bands.esc.npc.rna,chr==1)$start[1] & 
+            interp_bp_peak.npc_rna  <= filter( bands.esc.npc.rna,chr==1)$end[1] ) %>% 
+  mutate( lod.esc_rna = ifelse( is.na(lod.esc_rna), 0, lod.esc_rna)) # genes are not in the ESC data.
+
+chr1.esc.eQTL1 <- peaks.esc_rna.wnpc.overlap %>% 
+  filter( peak_chr == 1) %>%
+  select( -peak_cM.esc_rna) %>% 
+  left_join(peaks.esc_rna.wEffs) %>% 
+  filter(lod.esc_rna >6 & !local.esc_rna & !is.na(local.esc_rna) & 
+           interp_bp_peak.esc_rna >= filter( bands.esc.npc.rna,chr==1)$start[1] &
+           interp_bp_peak.esc_rna  <= filter( bands.esc.npc.rna,chr==1)$end[1]) %>% 
+  mutate( lod.npc_rna = ifelse( is.na(lod.npc_rna), 0, lod.npc_rna)) # gene is not found in the npc data 
+
+
+```
+
+### eQTL in the region
+
+```{r chr1_eqtl_plot}
+#| warning: false
+#| message: false
+#| fig-width: 5
+#| fig-height: 5
+
+
+chr1.npc.eQTL1 %>% 
+  mutate(match =ifelse(match=="npc_rna","NPC eQTL",match), match=ifelse(match=="esc_rna","ESC eQTL",match))  %>%
+  ggplot()+
+  aes(x=lod.esc_rna,y=lod.npc_rna,col=match)+
+  geom_point(size=3,alpha=0.5)+
+  theme_pubclean(base_size = 16)+
+  geom_vline(xintercept = 6,linetype=2)+
+  geom_hline(yintercept=6,linetype=2)+
+  scale_color_manual(values= c("NPC eQTL"=qtl.colors[["npc_rna"]],
+                               "ESC eQTL"=qtl.colors[["esc_rna"]],
+                               "shared"=qtl.colors[["shared"]]))+
+  xlab("LOD score from ESC eQTL scan")+
+  ylab("LOD score from NPC eQTL scan")+
+  xlim(0,15)+
+  ylim(0,15) -> p
+
+p+
+  geom_point(
+    data = (chr1.esc.eQTL1 %>% 
+              mutate(match =ifelse(match=="npc_rna","NPC eQTL",match), match=ifelse(match=="esc_rna","ESC eQTL",match))
+            ),
+    size = 3,
+    alpha = 0.5
+    )
+  
+
+```
+
+```{r}
+#| warning: false
+#| message: false
+
+chr1.npc.eQTL1 %>% 
+  mutate(match =ifelse(match=="npc_rna","NPC eQTL",match), match=ifelse(match=="esc_rna","ESC eQTL",match)) %>% 
+  select( ensembl_gene_id, mgi_symbol, peak_chr, gene_chr, lod.npc_rna, lod.esc_rna, interp_bp_peak.npc_rna, interp_bp_peak.esc_rna) %>% 
+  mutate_if( is.numeric, round, 2) %>% 
+  create_dt()
+
+```
+
+### ORA with NPC eQTL in the region
+
+Note that I am running ORA for the genes with unique NPC eQTL using a custom background of the full NPC gene list instead of genes with distant eQTL.
+
+```{r chr1_ora}
+#| warning: false
+#| message: false
+
+genes.w.eqtl <- peaks.npc_rna.wEffs %>% 
+  filter(lod.npc_rna > 7.5) %>% 
+  select(ensembl_gene_id, local.npc_rna) %>% 
+  distinct() %>% 
+  left_join(npc.genes) %>% 
+  filter( ensembl_gene_id %in% shared.genes)
+
+
+g.chr1 <- gost(query =  unique(chr1.npc.eQTL1$mgi_symbol),
+                        organism = "mmusculus", 
+                        domain_scope = "custom", 
+                        custom_bg = npc.genes$mgi_symbol, #unique((genes.w.eqtl %>% filter(!local.npc_rna))$mgi_symbol)
+                        correction_method = "fdr",
+                        evcodes = TRUE)
+g.chr1$result <- g.chr1$result %>% filter(term_size < 500)
+
+```
+
+```{r chr1_ora_plot}
+#| warning: false
+#| message: false
+
+gostplot(g.chr1, capped = F)
+
+```
+
+```{r chr1_ora_table}
+#| warning: false
+#| message: false
+
+g.chr1$result %>% 
+  select(source, term_name, intersection_size, term_size , FDR = p_value, intersection) %>%
+  filter( FDR < 0.01) %>%
+  mutate_if(is.numeric, formatC, digits =2, format ="fg") %>%
+  create_dt()
+  
+```
+
+
+<!-- ```{r} -->
+<!-- library(tidytext) -->
+<!--  # tokenize -->
+<!-- tokens <- g.chr1$result |>  -->
+<!--   select(term_name) |>  -->
+<!--   unnest_tokens(term_name, term_name) |>  -->
+<!--   dplyr::count(term_name, sort = TRUE)|>  -->
+<!--   ungroup() |>  -->
+<!--   rename("word" = "term_name") -->
+<!-- data("stop_words") -->
+<!-- tokens_clean <- tokens %>% -->
+<!--   anti_join(stop_words) -->
+<!-- nums <- tokens_clean %>% filter(str_detect(word, "^[0-9]")) %>% select(word) %>% unique() -->
+
+<!-- tokens_clean <- tokens_clean %>%  -->
+<!--   anti_join(nums, by = "word") -->
+
+<!-- # remove any other words that snuck in there -->
+<!-- uni_sw <- data.frame(word = c("process","processing","complex", "regulation")) -->
+
+<!-- tokens_clean <- tokens_clean %>%  -->
+<!--   anti_join(uni_sw, by = "word") -->
+
+<!-- # plot the 50 most common words -->
+<!-- tokens_clean %>%  -->
+<!--   with(wordcloud::wordcloud(word, n, random.order = FALSE, max.words = 50)) -->
+<!-- ``` -->
+
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 8
+#| eval: false
+
+
+# mRNA processing
+# DNA repair
+# chromatin organization
+
+# cell division
+
+# Mitotic Spindle Checkpoint
+# chromosome segregation
+# sister chromatid segregation
+# nuclear chromosome segregation
+# mitotic sister chromatid segregation
+# Mitotic Prometaphase
+# Cell Cycle Checkpoints
+# Amplification of signal from unattached kinetochores via a MAD2 inhibitory signal
+# Amplification of signal from the kinetochores
+# Resolution of Sister Chromatid Cohesion
+# Separation of Sister Chromatids
+# M Phase
+# Mitotic Anaphase
+
+# qwraps2::lazyload_cache_dir("01d_esc_npc_deseq_cache/html/")
+
+# any category with spindle, segregation
+chr1_spindle_genes <- g.chr1$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( term_name %in% c("mRNA processing",
+                           "DNA repair",
+                           "chromatin organization",
+                           "chromosome segregation",
+                           "cell division",
+                           "Mitotic Spindle Checkpoint")) %>% 
+  select(term_name, intersection) %>%
+  separate_rows(intersection, sep = ",") %>%
+  rename( mgi_symbol = intersection) %>%
+  left_join( npc_esc_wilcox_df %>%
+               select( ensembl_gene_id, log2foldchange, p) %>%
+               left_join( all.genes %>%
+                            select(mgi_symbol, ensembl_gene_id))) %>%
+  select( mgi_symbol, term_name, log2foldchange)
+
+
+g.chr1.all <- graph_from_data_frame(chr1_spindle_genes, directed=FALSE)
+V(g.chr1.all)$lfc <- c((chr1_spindle_genes %>% 
+  select(mgi_symbol, log2foldchange) %>% 
+  distinct())$log2foldchange, rep(-10, length(unique(chr1_spindle_genes$term_name)))) 
+
+p <- ggraph(g.chr1.all)+
+  geom_edge_link0(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-4,4),option = "turbo")+
+  theme_classic(base_size=10)+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="Log Fold Change in NPCs")
+
+# ggsave(p, filename = here("figures","chr1_network_plot.svg"), width = 12, height = 8, units = "in", dpi = 300)
+
+p
+
+
+```
+
+### Expression change in overrepresented pathways
+
+Looking at expression change in genes identified in relation to spindle assembly checkpoint and related pathways. 
+
+```{r deg_ora_pathways}
+#| warning: false
+#| message: false
+#| eval: false
+#| fig-width: 16
+#| fig-height: 10
+
+# qwraps2::lazyload_cache_dir("01d_esc_npc_deseq_cache/html/")
+
+# any category with spindle, segregation
+chr1_spindle_genes <- g.chr1$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "(?i)repair") |
+            str_detect( term_name, "(?i)replication") |
+            str_detect( term_name, "(?i)spindle") |
+            str_detect(term_name, "(?i)segregation")|
+            str_detect(term_name, "(?i)chromatid") |
+            str_detect(term_name, "(?i)kinetochore") |
+            str_detect(intersection,"Mad2l1")) %>% 
+  select(term_name, intersection) %>%
+  separate_rows(intersection, sep = ",") %>%
+  rename( mgi_symbol = intersection) %>%
+  left_join( npc_esc_wilcox_df %>%
+               select( ensembl_gene_id, log2foldchange, p) %>%
+               left_join( all.genes %>%
+                            select(mgi_symbol, ensembl_gene_id))) %>%
+  select( mgi_symbol, term_name, log2foldchange)
+
+
+g.chr1.all <- graph_from_data_frame(chr1_spindle_genes, directed=FALSE)
+V(g.chr1.all)$lfc <- c((chr1_spindle_genes %>% 
+  select(mgi_symbol, log2foldchange) %>% 
+  distinct())$log2foldchange, rep(-10, length(unique(chr1_spindle_genes$term_name)))) 
+
+ggraph(g.chr1.all)+
+  geom_edge_link0(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-4,4))+
+  theme_classic(base_size=10)+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="Log Fold Change in NPCs")
+
+```
+
+
+
+### NPC eQTL allele effects
+
+```{r npc_allele_effects_chr1_sig}
+#| warning: false
+#| message: false
+#| fig-width: 6
+#| fig-height: 4
+
+haps <- c("A","B","C","D","E","F","G","H")
+
+chr1.npc.eQTL1.mat <- chr1.npc.eQTL1 %>% 
+  filter(lod.npc_rna > 7.5) %>% 
+  filter(!is.na(A.npc_rna)) %>% 
+  select(c(paste0(haps,".npc_rna"),"mgi_symbol")) %>% 
+  distinct() %>%
+  column_to_rownames("mgi_symbol") %>%
+  as.matrix() %>% 
+  t()
+
+annotation <- chr1.npc.eQTL1 %>% 
+  dplyr::mutate(match = ifelse(match =="npc_rna","NPC_eQTL",match)) %>%
+  filter(mgi_symbol %in% colnames(chr1.npc.eQTL1.mat)) %>%
+  filter(!is.na(A.npc_rna)) %>% 
+  select(c(paste0(haps,".npc_rna"),"mgi_symbol","match")) %>% 
+  distinct() %>% 
+  column_to_rownames("mgi_symbol") %>% 
+  select(match) 
+
+annotation_row <- data.frame(strain=c("AJ","B6","129","NOD","NZO","CAST","PWK","WSB"))
+rownames(annotation_row) <- rownames(chr1.npc.eQTL1.mat)  
+
+annot.colors <- list(strain = founder_colors,
+                     match=c( NPC_eQTL=qtl.colors[["npc_rna"]], shared=qtl.colors[["shared"]]))
+
+# svg(filename = here("figures","chr1_hotspot_allele_eff.svg"),width = 800, height = 600)
+pheatmap(chr1.npc.eQTL1.mat,
+                                   cluster_rows=T,show_rownames=FALSE,
+                                   cluster_cols=T, show_colnames = FALSE, 
+                                   clustering_method = "complete", 
+                                   scale="none",
+                                   clustering_distance_cols="correlation",
+                                   clustering_distance_rows="correlation",
+                                   #main = "Founder allele effects of chr 1 NPC eQTL hotspot genes",
+                                   annotation_col= annotation, 
+                                   annotation_row = annotation_row, 
+                                   annotation_colors = annot.colors, 
+                                   cutree_rows = 2)
+
+
+# dev.off()
+
+```
+
+```{r npc_allele_effects_chr1 }
+#| warning: false
+#| message: false
+#| fig-width: 8
+#| fig-height: 6
+
+haps <- c("A","B","C","D","E","F","G","H")
+
+chr1.npc.eQTL1.mat <- chr1.npc.eQTL1 %>% 
+  filter(!is.na(A.npc_rna)) %>% 
+  select(c(paste0(haps,".npc_rna"),"mgi_symbol")) %>% 
+  distinct() %>%
+  column_to_rownames("mgi_symbol") %>%
+  as.matrix() %>% 
+  t()
+
+annotation <- chr1.npc.eQTL1 %>% 
+  dplyr::mutate(match = ifelse(match =="npc_rna","NPC_eQTL",match)) %>%
+  filter(mgi_symbol %in% colnames(chr1.npc.eQTL1.mat)) %>%
+  filter(!is.na(A.npc_rna)) %>% 
+  select(c(paste0(haps,".npc_rna"),"mgi_symbol","match")) %>% 
+  distinct() %>% 
+  column_to_rownames("mgi_symbol") %>% 
+  select(match) 
+
+annotation_row <- data.frame(strain=c("AJ","B6","129","NOD","NZO","CAST","PWK","WSB"))
+rownames(annotation_row) <- rownames(chr1.npc.eQTL1.mat)  
+
+annot.colors <- list(strain = founder_colors,
+                     match=c( NPC_eQTL=qtl.colors[["npc_rna"]], shared=qtl.colors[["shared"]]))
+
+# svg(filename = here("figures","chr1_hotspot_allele_eff.svg"),width = 800, height = 600)
+pheatmap(chr1.npc.eQTL1.mat,
+                                   cluster_rows=T,show_rownames=FALSE,
+                                   cluster_cols=T, show_colnames = FALSE, 
+                                   clustering_method = "complete", 
+                                   scale="none",
+                                   clustering_distance_cols="correlation",
+                                   clustering_distance_rows="correlation",
+                                   #main = "Founder allele effects of chr 1 NPC eQTL hotspot genes",
+                                   annotation_col= annotation, 
+                                   annotation_row = annotation_row, 
+                                   annotation_colors = annot.colors, 
+                                   cutree_rows = 2)
+
+
+# dev.off()
+
+```
+
+
+### Mediation of target eQTL
+
+```{r chr1_npc_eqtl_run_mediation}
+#| warning: false
+#| message: false
+#| cache: true
+#| eval: false
+chr1_npc_eqtl_npc_meds <- do_global_mediation(gene.name = chr1.npc.eQTL1$mgi_symbol[1],
+                    p.chr = chr1.npc.eQTL1$peak_chr[1],
+                    peak.info = chr1.npc.eQTL1,
+                    probs = shared.probs.npc_rna,#probs.npc_rna,
+                    expr.target = exprZ.npc_rna[shared.samples,,drop=FALSE],#exprZ.npc_rna,
+                    expr.mediator = exprZ.npc_rna[shared.samples,,drop=FALSE],#exprZ.npc_rna,
+                    covar= covar.npc_rna[shared.samples,,drop=FALSE],#covar.npc_rna,
+                    med.type = "n-n",
+                    genes = npc.genes)
+
+for(i in 2:nrow(chr1.npc.eQTL1)){
+  meds <- do_global_mediation(gene.name = chr1.npc.eQTL1$mgi_symbol[i],
+                    p.chr = chr1.npc.eQTL1$peak_chr[i],
+                    peak.info = chr1.npc.eQTL1,
+                    probs = shared.probs.npc_rna,#probs.npc_rna,
+                    expr.target = exprZ.npc_rna[shared.samples,,drop=FALSE],#exprZ.npc_rna,
+                    expr.mediator = exprZ.npc_rna[shared.samples,,drop=FALSE],#exprZ.npc_rna,
+                    covar= covar.npc_rna[shared.samples,,drop=FALSE],#covar.npc_rna,
+                    med.type = "n-n",
+                    genes = npc.genes)
+  chr1_npc_eqtl_npc_meds <- rbind(chr1_npc_eqtl_npc_meds, meds)
+}
+
+chr1_npc_eqtl_esc_meds <- do_global_mediation(gene.name = chr1.npc.eQTL1$mgi_symbol[1],
+                    p.chr = chr1.npc.eQTL1$peak_chr[1],
+                    peak.info = chr1.npc.eQTL1,
+                    probs = shared.probs.npc_rna,
+                    expr.target = exprZ.npc_rna[shared.samples,,drop=FALSE],
+                    expr.mediator = exprZ.esc_rna[shared.samples,,drop=F],
+                    covar= covar.npc_rna[shared.samples,,drop=F],
+                    med.type = "e-n",
+                    genes = npc.genes)
+
+for(i in 2:nrow(chr1.npc.eQTL1)){
+  meds <- do_global_mediation(gene.name = chr1.npc.eQTL1$mgi_symbol[i],
+                    p.chr = chr1.npc.eQTL1$peak_chr[i],
+                    peak.info = chr1.npc.eQTL1,
+                    probs = shared.probs.npc_rna,
+                    expr.target = exprZ.npc_rna[shared.samples,,drop=FALSE],
+                    expr.mediator = exprZ.esc_rna[shared.samples,,drop=F],
+                    covar= covar.npc_rna[shared.samples,,drop=F],
+                    med.type = "e-n",
+                    genes = npc.genes)
+  chr1_npc_eqtl_esc_meds <- rbind(chr1_npc_eqtl_esc_meds, meds)
+}
+
+```
+
+```{r chr1_meds_manual_run}
+#| warning: false
+#| message: false
+#| eval: false
+
+# I reran the mediation locally to see if the results I get are the same and they are identical. So no worries on the mediation results! Mainly, filtering based on z-threshold removes a lot of mediators that are not 'good enough'. 
+
+chr1_npc_eqtl_npc_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind(chr1_npc_eqtl_esc_meds %>% 
+          mutate(type ="esc")) %>% 
+    left_join( chr1.npc.eQTL1 %>% 
+                 select( target = mgi_symbol, 
+                         peak_chr, 
+                         target_lod = lod.npc_rna,
+                         target_pos = interp_bp_peak.npc_rna,
+                         target_chr = gene_chr)) %>%
+  select(
+    target,
+    peak_chr,
+    target_lod,
+    target_pos,
+    target_chr,
+    mediator_id = ensembl_gene_id, 
+    mediator,
+    mediator_chr = gene_chr, 
+    mediator_midpoint = midpoint,
+    mediation_lod = LOD,
+    type
+  ) %>% 
+  group_by( target, peak_chr, target_lod, target_chr,type) %>% 
+  mutate( scaled_LOD = scale(mediation_lod)) %>% 
+  filter( abs(target_pos-mediator_midpoint) <= 10e6 &   # filter within 10Mb
+          peak_chr == mediator_chr,
+          scaled_LOD < -4 # z threshold -4
+          )   -> chr1_npc_eqtl_meds
+  
+chr1_npc_eqtl_meds %>% 
+  mutate(mediation_lod = ifelse(target == mediator, NA, mediation_lod)) %>%
+  mutate(lod_drop = target_lod - mediation_lod) %>%
+  group_by(target) %>%
+  arrange(mediation_lod) %>%
+  mutate(rank = rep(seq(1:n()))) -> chr1.meds.ranked
+
+chr1.meds.ranked.sum <- chr1.meds.ranked %>%
+  filter(rank %in% c( 1)) %>% 
+  group_by(mediator,type) %>%
+  summarize(n = length(target), min_drop = min(lod_drop, na.rm = T), max_drop = max(lod_drop, na.rm = T), med_drop = median(lod_drop, na.rm = T)) %>%
+  arrange(desc(n)) %>% 
+  mutate(mediator = str_c(toupper(type)," , " ,mediator))
+
+chr1.meds.ranked.sum
+
+```
+
+```{r chr1_meds}
+#| warning: false
+#| message: false
+#| results: hide
+#| eval: true
+
+eqtl_esc_rna_meds %>%
+  inner_join(select(chr1.npc.eQTL1, "target.id" = ensembl_gene_id, "qtl.chr" = peak_chr)) -> chr1.esc.meds
+
+eqtl_npc_rna_meds %>% 
+  inner_join(select(chr1.npc.eQTL1, "target.id" = ensembl_gene_id, "qtl.chr" = peak_chr)) -> chr1.npc.meds
+
+chr1.esc.meds %>%
+  mutate( type="esc") %>% 
+  rbind( chr1.npc.meds %>%  mutate( type ="npc")) %>% 
+  mutate(mediation.lod = ifelse(target.symbol == mediator.symbol, NA, mediation.lod)) %>%
+  mutate(lod_drop = target.lod - mediation.lod) %>%
+  group_by(target.symbol) %>%
+  arrange(mediation.lod) %>%
+  mutate(rank = rep(seq(1:n()))) -> chr1.meds.ranked
+
+chr1.meds.ranked.sum <- chr1.meds.ranked %>%
+  filter(rank %in% c( 1)) %>% 
+  group_by(mediator.symbol,type) %>%
+  summarize(n = length(target.symbol), min_drop = min(lod_drop, na.rm = T), max_drop = max(lod_drop, na.rm = T), med_drop = median(lod_drop, na.rm = T)) %>%
+  arrange(desc(n)) %>% 
+  mutate(mediator.symbol = str_c(toupper(type)," , " ,mediator.symbol))
+
+chr1.meds.ranked.sum
+
+```
+
+```{r chr1_meds_plot}
+#| warning: false
+#| message: false
+#| fig-width: 14
+#| fig-height: 5
+
+results <- chr1.meds.ranked %>%
+  ungroup() %>%
+  select(mediator.symbol, target.symbol, mediation.lod, target.lod, lod_drop, type) %>%
+  mutate(mediator.symbol = str_c(toupper(type)," , " ,mediator.symbol)) %>% 
+  select(-mediation.lod, -target.lod,- type) %>%
+  filter((mediator.symbol %in% str_c(chr1.meds.ranked.sum$mediator.symbol[1:5]))) %>%
+  mutate(lod_drop = ifelse(lod_drop < 0, 0, lod_drop), lod_drop = ifelse(lod_drop > 6, 6, lod_drop)) %>%
+  rename(target = target.symbol, LOD_diff = lod_drop)
+
+p <- ggplot(results, aes(y = mediator.symbol, x = target)) +
+  geom_point(aes(color = LOD_diff, size = exp(LOD_diff) / 30), alpha = 0.6) +
+  scale_color_gradientn(
+    colors = c("white", "firebrick3", "navy"),
+    values = scales::rescale(c(0, 3, 6)),
+    name = "LOD\ndifference", limits = c(0, 6)
+  ) +
+  scale_size(breaks = 0:6, labels = as.character(0:6), range = c(0, 8)) +
+  guides(size = "none") +
+  theme_pubclean(base_size = 18) +
+  theme(
+    axis.text.y = element_text(size = 14, hjust = 1),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 0),
+    axis.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank()
+  ) +
+  xlab("Target eQTL")+
+  ylab("Mediator")
+p
+
+# ggsave(p, filename = here("figures","chr1_hotspot_mediation.svg"), width = 14, height = 5, units = "in", dpi = 300)
+
+```
+
+
+Which eQTL are best mediated by *Pign* ESC expression?
+
+```{r}
+#| warning: false
+#| message: false
+
+chr1.meds.ranked %>% 
+  filter( rank %in% c( 1,2) & mediator.symbol =="Pign" ) %>% 
+  select( type, rank,
+    target.id, target.symbol, target.chr, target.lod, mediation.lod ) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  create_dt()
+
+
+```
+
+
+
+
+### Closer look at *Pign*
+
+```{r pign_eqtl}
+#| warning: false
+#| message: false
+
+pign_eqtl <- peaks.npc_rna.wesc.overlap %>% 
+  filter( lod.esc_rna >7.5, mgi_symbol =="Pign")
+
+kinship.shared.esc_rna <- calc_kinship(shared.probs.esc_rna, type = "loco")
+kinship.shared.npc_rna <- calc_kinship(shared.probs.npc_rna, type = "loco")
+# LOD plot
+pign_esc_scan <- scan1( pheno = exprZ.esc_rna[shared.samples,pign_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = shared.probs.esc_rna, 
+                    kinship = kinship.shared.esc_rna,
+                    addcovar = covar.esc_rna[shared.samples,])
+
+pign_npc_scan <- scan1( pheno = exprZ.npc_rna[shared.samples,pign_eqtl$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = shared.probs.npc_rna, 
+                    kinship = kinship.shared.npc_rna,
+                    addcovar = covar.npc_rna[shared.samples,])
+
+
+pign_esc_scan %>% 
+  as.data.frame( ) %>% 
+  rename( esc_rna = pign_eqtl$ensembl_gene_id) %>% 
+  mutate( marker = dimnames(pign_esc_scan)[[1]]) %>% 
+  left_join(map_dat2) %>% 
+  cbind(
+    pign_npc_scan %>% as.data.frame() %>% rename( npc_rna = pign_eqtl$ensembl_gene_id)
+  ) -> pign_qtl_scans
+
+pign_qtl_scans %>% 
+  filter( chr == pign_eqtl$peak_chr) %>% 
+  pivot_longer( cols = c("npc_rna","esc_rna"), names_to = "qtl_type", values_to = "lod") %>% 
+  mutate( qtl_type = factor( qtl_type, levels = c("npc_rna","esc_rna"))) %>% 
+  ggplot()+
+    aes( 
+      x= pos_bp/1e06,
+      y = lod,
+      col = qtl_type
+      )+
+    geom_rect(  xmin =filter( bands.esc.npc.rna,chr==1)$start[2]/1e06, 
+              xmax = filter( bands.esc.npc.rna,chr==1)$end[2]/1e06, 
+              ymin = 0, 
+              ymax = 25, 
+              fill = "gray", 
+             inherit.aes = FALSE, 
+             alpha = 0.1, 
+             show.legend = FALSE)+
+    geom_line( size = 1.5)+
+    theme_pubclean( base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
+                       labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  xlab(paste0("Chr ",pign_eqtl$peak_chr," location (Mbp)"))+
+  ylab( "LOD score")+
+  labs(col = "QTL type")+
+  geom_segment( x = pign_eqtl$gene_start/1e06, xend = pign_eqtl$gene_end/1e06 , y = 0, yend = 1, col = "black", size = 2) +
+  annotate( "text", x= pign_eqtl$midpoint/1e06, y = -0.8, label ="Pign", size =6, fontface = "italic")+
+  annotate( "text", x= 12+filter( bands.esc.npc.rna,chr==1)$end[2]/1e06, y = 23, label ="eQTL \n Hotspot", size =5)-> pign_lod_plot
+
+
+
+# Effects plot
+pign_esc_eff <- peaks.esc_rna.wEffs %>% 
+  inner_join( pign_eqtl %>% select(ensembl_gene_id, peak_chr, lod.esc_rna))
+
+pign_npc_eff <- peaks.npc_rna.wEffs %>% 
+  inner_join( pign_eqtl %>% select(ensembl_gene_id, peak_chr, lod.npc_rna))
+pign_effs <- pign_esc_eff %>% 
+  select( mgi_symbol, paste0(LETTERS[1:8], ".esc_rna")) %>% 
+  cbind( pign_npc_eff %>% select(paste0(LETTERS[1:8], ".npc_rna")) ) 
+
+pign_effs %>% 
+  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna"),
+          paste0(LETTERS[1:8], ".esc_rna")), 
+          names_to = c("effect"),
+          values_to = "value") %>% 
+  separate(effect, sep ="[.]", into = c("effect","type")) %>% 
+  mutate( effect = case_when( effect == "A" ~ "AJ",
+                              effect == "B" ~ "B6",
+                              effect == "C" ~ "129",
+                              effect == "D" ~ "NOD",
+                              effect == "E" ~ "NZO",
+                              effect == "F" ~ "CAST",
+                              effect == "G" ~ "PWK",
+                              effect == "H" ~ "WSB")) %>% 
+  mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>% 
+  ggplot()+
+  aes( x = effect,
+       y = value, 
+       col = type,
+       group = type)+
+  geom_point(size = 4, show.legend = FALSE)+
+  geom_line(show.legend = T, size = 1.2)+
+  theme_pubclean(base_size = 18)+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
+                      labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
+  ylab("Haplotype effects")+
+  xlab("")+
+  #ylim(-2,1.1)+
+  geom_hline( yintercept = 0)+
+  theme(axis.line.x = element_blank(),
+        axis.title = element_text(size = 18))+
+  labs(col ="QTL type")+
+  coord_flip( clip ="off")+
+  theme(legend.position = "none") -> pign_haplotype_plot
+
+```
+
+```{r pign_lod_haps_plot}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 5
+
+
+pign_plot<- ggarrange( pign_lod_plot, pign_haplotype_plot, widths = c(1, 0.5))
+pign_plot
+
+# ggsave(pign_plot, filename = here("figures","pign_plot.svg"), width = 12, height = 5, dpi = 300)
+
+```
+
+```{r pign_as}
+#| warning: false
+#| message: false
+
+pmap_Mbp <- lapply( pmap, function(x){x/1e06})
+
+probs <- probs.esc_rna
+attr(probs, "is_x_chr") <- NULL
+pign_as <- scan1snps(genoprobs = probs, 
+                     map = pmap_Mbp, 
+                     pheno = exprZ.esc_rna[,pign_eqtl$ensembl_gene_id,drop = F],
+                     kinship = kinship_loco.esc_rna[[pign_eqtl$peak_chr]],
+                     addcovar = covar.esc_rna, 
+                     chr = as.character(pign_eqtl$peak_chr),
+                     query_func = query_variants,
+                     start = pign_eqtl$interp_bp_peak.esc_rna/1e06 - 5,
+                     end = pign_eqtl$interp_bp_peak.esc_rna/1e06 + 5,
+                     keep_all_snps = F
+
+                                          )
+attr(probs.npc_rna, "is_x_chr") <- NULL
+pign_as_npc <- scan1snps(genoprobs = probs.npc_rna, 
+                     map = pmap_Mbp, 
+                     pheno = exprZ.npc_rna[,pign_eqtl$ensembl_gene_id,drop = F],
+                     kinship = kinship_loco.npc_rna[[pign_eqtl$peak_chr]],
+                     addcovar = covar.npc_rna, 
+                     chr = as.character(pign_eqtl$peak_chr),
+                     query_func = query_variants,
+                     start = pign_eqtl$interp_bp_peak.npc_rna/1e06 - 5,
+                     end = pign_eqtl$interp_bp_peak.npc_rna/1e06 + 5,
+                     keep_all_snps = F
+                     )
+
+genes <- query_genes( pign_eqtl$peak_chr, 
+                      pign_eqtl$interp_bp_peak.esc_rna/1e06 - 5, 
+                      pign_eqtl$interp_bp_peak.esc_rna/1e06 + 5) %>%  
+  distinct()
+
+```
+
+```{r pign_as_plot}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 8
+
+par(mar=c(4.1, 4.1,2, 1))
+plot(pign_as$lod,
+     pign_as$snpinfo,
+     #drop_hilit = 1,
+     genes = genes, cex.lab =1.5)
+
+```
+
+SNPs with matching 4:4 in the area.
+
+```{r pign_as_table}
+#| warning: false
+#| message: false
+
+pign_as %>% 
+   as.data.frame() %>% 
+  filter( ENSMUSG00000056536 > 5) %>% 
+  select( LOD = ENSMUSG00000056536,
+          snp_id = snpinfo.snp_id,
+          pos = snpinfo.pos,
+          alleles = snpinfo.alleles,
+          consequence = snpinfo.consequence,
+          ensembl_gene_id = snpinfo.ensembl_gene,
+          `129` = snpinfo.129S1_SvImJ,
+          `AJ` = snpinfo.A_J,
+          `CAST` = snpinfo.CAST_EiJ,
+          `NZO` = snpinfo.NZO_HlLtJ,
+          `PWK` = snpinfo.PWK_PhJ,
+          `B6` = snpinfo.C57BL_6J,
+          `NOD` = snpinfo.NOD_ShiLtJ,
+          `WSB` = snpinfo.WSB_EiJ
+          ) %>% 
+  filter( `129`==`B6`, B6==CAST , CAST==NOD &
+            AJ == NZO, NZO ==WSB, PWK ==WSB) %>%
+  left_join(., select(all.genes, ensembl_gene_id, mgi_symbol) %>%  distinct() ) %>% 
+  mutate_if(is.numeric, round, 1) %>% 
+  create_dt()
+
+```
+
+Comparing ESC vs NPC expression of **Pign**:
+
+```{r}
+#| warning: false
+#| message: false
+
+pign_expr <- tibble( esc = expr.esc_rna[shared.samples,"ENSMUSG00000056536"],
+        npc = expr.npc_rna[shared.samples, "ENSMUSG00000056536"],
+        esc_rankz = exprZ.esc_rna[shared.samples, "ENSMUSG00000056536"],
+        npc_rankz = exprZ.npc_rna[shared.samples, "ENSMUSG00000056536"],
+        sample = shared.samples)
+
+ggscatter( pign_expr,
+           x = "esc_rankz",
+           y = "npc_rankz",
+           size = 3, 
+           alpha = 0.6,
+           add = "reg.line", # Add regression line
+           conf.int = TRUE, # Add confidence interval
+           add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE
+) +
+  stat_cor(method = "spearman") + # Add correlation coefficient
+  xlab("ESC") +
+  ylab("NPC") +
+  theme_pubclean(base_size = 14)
+
+```
+
+Correlation of **Pign** expression to the target genes it is mediating:
+
+```{r pign_cor_to_target_prep}
+#| warning: false
+#| message: false
+
+pign_med_genes <- chr1.meds.ranked %>% 
+  filter( rank == 1 & mediator.symbol =="Pign" & type =="esc") |> 
+  arrange( desc(lod_drop)) |> 
+  head( n = 20)
+
+pign_med_genes_expr <- as_tibble( expr.esc_rna[shared.samples, unique(pign_med_genes$target.id)], rownames = "sampleid") |> 
+  pivot_longer(2:(nrow(pign_med_genes)+1), names_to = "ensembl_gene_id", values_to = "esc") |> 
+  left_join(
+    as_tibble( expr.npc_rna[shared.samples, unique(pign_med_genes$target.id)], rownames ="sampleid") |> 
+  pivot_longer(2:(nrow(pign_med_genes)+1), names_to = "ensembl_gene_id", values_to = "npc")
+  ) |> 
+  left_join(
+    as_tibble( exprZ.npc_rna[shared.samples, unique(pign_med_genes$target.id)], rownames ="sampleid") |> 
+  pivot_longer(2:(nrow(pign_med_genes)+1), names_to = "ensembl_gene_id", values_to = "npc_rankz")
+  ) |> 
+  left_join(
+    as_tibble( exprZ.esc_rna[shared.samples, unique(pign_med_genes$target.id)], rownames ="sampleid") |> 
+  pivot_longer(2:(nrow(pign_med_genes)+1), names_to = "ensembl_gene_id", values_to = "esc_rankz")
+  ) |> 
+  full_join(
+    pign_expr |> select(sampleid = sample, pign_esc = esc, pign_npc= npc, pign_esc_rankz = esc_rankz, pign_npc_rankz = npc_rankz)  
+  ) |> 
+  left_join( all.genes_v91)
+```
+
+```{r pign_esc_cor_to_npc_expr}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 15
+
+  
+ggscatter( pign_med_genes_expr,
+           x = "pign_esc_rankz",
+           y = "npc_rankz",
+           size = 3, 
+           alpha = 0.6,
+           add = "reg.line", # Add regression line
+           conf.int = TRUE, # Add confidence interval
+           add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE,
+           facet.by = "mgi_symbol"
+) +
+  stat_cor(method = "spearman") + # Add correlation coefficient
+  xlab("Pign ESC expression (rankZ)") +
+  ylab("NPC gene expression (rankZ)") +
+  theme_pubclean(base_size = 14)
+
+
+
+```
+
+
+```{r pign_npc_cor_to_npc_expr}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 15
+
+ggscatter( pign_med_genes_expr,
+           x = "pign_npc_rankz",
+           y = "npc_rankz",
+           size = 3, 
+           alpha = 0.6,
+           add = "reg.line", # Add regression line
+           conf.int = TRUE, # Add confidence interval
+           add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE,
+           facet.by = "mgi_symbol"
+) +
+  stat_cor(method = "spearman") + # Add correlation coefficient
+  xlab("Pign NPC expression (rankZ)") +
+  ylab("NPC gene expression (rankZ)") +
+  theme_pubclean(base_size = 14)
+
+
+
+```
+
+```{r pign_esc_cor_to_esc_expr}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 15
+
+ggscatter( pign_med_genes_expr,
+           x = "pign_esc_rankz",
+           y = "esc_rankz",
+           size = 3, 
+           alpha = 0.6,
+           add = "reg.line", # Add regression line
+           conf.int = TRUE, # Add confidence interval
+           add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE,
+           facet.by = "mgi_symbol"
+) +
+  stat_cor(method = "spearman") + # Add correlation coefficient
+  xlab("Pign ESC expression (rankZ)") +
+  ylab("ESC gene expression (rankZ)") +
+  theme_pubclean(base_size = 14)
+
+
+
+```
+
+
+### bmediatR results for Pign
+
+**Pign** NPC expression:
+
+```{r}
+#| warning: false
+#| message: false
+
+load(here("_data","bmediatr_results_Pign_300.RData")) # results
+
+qtl_peaks <- peaks.npc_rna.wEffs %>%
+  filter(peak_chr == 1,
+          between(interp_bp_peak.npc_rna,104395228,112253474),
+          local.npc_rna == FALSE,
+          lod.npc_rna >= 6)
+ 
+#find posterior probabilities 
+post_results_prob <- c()
+post_results_odds <- c()
+
+Pign_details <- npc.genes %>%
+   filter(mgi_symbol=="Pign") 
+
+for (i in 1:length(results)) {
+  post_results_prob[[i]] <- exp(results[[i]]$ln_post_c)[Pign_details$ensembl_gene_id, ]
+  post_results_odds[[i]] <- (results[[i]]$ln_post_odds)[Pign_details$ensembl_gene_id, ]
+  
+}
+
+mediation_results_odds <- do.call(rbind, post_results_odds) %>%
+  as_tibble() %>%
+  cbind( qtl_peaks
+         ) %>%
+  pivot_longer(1:8, names_to = "group", values_to = "odds") 
+
+```
+
+Odds:
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 15
+#| fig-height: 5
+
+mediation_results_odds %>%
+  filter( !str_detect(group, "y_"),
+          !group %in% c("mediation_or_colocal","reactive")) %>% 
+  ggplot()+
+  aes(y = odds,
+      x = ensembl_gene_id,
+      col = group,
+      fill = group)+
+  geom_point()+
+  theme_pubclean()+
+  theme(legend.position = "top",
+        axis.text.x = element_blank())+
+  #xlim(0,1)+
+  ylab("Log Posterior Odds")+
+  xlab("")+
+  #scale_x_log10()+
+  ggtitle("Mediation with mNPC eQTL with Pign NPC Expression")
+
+```
+
+<!-- ```{r, eval = F} -->
+
+<!-- mediation_results_odds %>% -->
+<!--   filter( odds > 20 & group =="mediation") -->
+
+<!-- ``` -->
+
+<!-- <!-- Example: **Coa5** is the one with the highest odds of causal mediation. --> -->
+
+<!-- ```{r, fig.width=10, fig.height=5, warning=FALSE, message=FALSE, eval = F} -->
+
+<!-- # run bmediatR -->
+<!-- Coa5_eqtl <- peaks.npc_rna.wesc.overlap %>%  -->
+<!--   filter( lod.npc_rna >6, mgi_symbol =="Coa5", local.npc_rna == F) -->
+
+<!-- marker <- map_dat2 %>% -->
+<!--        mutate(diff = abs(pos_bp - Coa5_eqtl$interp_bp_peak.npc_rna)) %>% -->
+<!--        slice_min(diff) -->
+<!-- genotype <- pull_genoprobpos( -->
+<!--     genoprobs = probs.npc_rna, -->
+<!--     marker = marker$marker -->
+<!--   ) -->
+
+<!-- Coa5_bmediatr_scan <- bmediatR( -->
+<!--     y = exprZ.npc_rna[,Coa5_eqtl$ensembl_gene_id,drop=FALSE], -->
+<!--     M = exprZ.npc_rna[,colnames(exprZ.npc_rna) != Coa5_eqtl$ensembl_gene_id], -->
+<!--     X = genotype,  -->
+<!--     Z = covar.npc_rna -->
+<!--   ) -->
+
+<!-- Pign_details <- npc.genes %>% -->
+<!--    filter(mgi_symbol=="Pign")  -->
+
+<!-- # exp(Coa5_bmediatr_scan$ln_post_c)[Pign_details$ensembl_gene_id,] -->
+<!-- # (Coa5_bmediatr_scan$ln_post_odds)[Pign_details$ensembl_gene_id,] -->
+
+<!-- # plot_posterior_bar(Coa5_bmediatr_scan, med_annot = npc.genes %>% mutate( middle = midpoint ,symbol = mgi_symbol), med_var = "ensembl_gene_id", mediator_id = Pign_details$ensembl_gene_id) -->
+<!-- # plot_posterior_odds(bmediatR_object = Coa5_bmediatr_scan, model_type = "mediation",med_annot = npc.genes %>% mutate( chr = gene_chr, middle = midpoint ,symbol = mgi_symbol), med_var = "ensembl_gene_id", bgcol = "white", altbgcol = "white", include_chr = 1, label_thresh = 20, label_thresh_greater_than = T, main = "Coa5") -->
+
+
+<!-- ``` -->
+
+
+**Pign** ESC expression:
+
+```{r}
+#| warning: false
+#| message: false
+
+load(here("_data","bmediatr_shared_results_Pign_300.RData")) # shared_results
+
+#find posterior probabilities
+shared_post_results_prob <- c()
+shared_post_results_odds <- c()
+
+Pign_details <- npc.genes %>%
+   filter(mgi_symbol=="Pign")
+
+for (i in 1:length(shared_results)) {
+  shared_post_results_prob[[i]] <- exp(shared_results[[i]]$ln_post_c)[Pign_details$ensembl_gene_id, ]
+  shared_post_results_odds[[i]] <- (shared_results[[i]]$ln_post_odds)[Pign_details$ensembl_gene_id, ]
+
+}
+
+shared_mediation_results_odds <- do.call(rbind, shared_post_results_odds) %>%
+  as_tibble() %>%
+  cbind( qtl_peaks
+         ) %>%
+  pivot_longer(1:8, names_to = "group", values_to = "odds")
+
+
+```
+
+Odds:
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 15
+#| fig-height: 5
+
+shared_mediation_results_odds %>%
+  filter( !str_detect(group, "y_"),
+          !group %in% c("mediation_or_colocal","reactive")) %>%
+  ggplot()+
+  aes(y = odds,
+      x = ensembl_gene_id,
+      col = group,
+      fill = group)+
+  geom_point()+
+  theme_pubclean()+
+  theme(legend.position = "top",
+        axis.text.x = element_blank())+
+  #xlim(0,1)+
+  ylab("Log Posterior Odds")+
+  xlab("")+
+  #scale_x_log10()+
+  ggtitle("Mediation with mNPC eQTL with Pign ESC Expression")
+
+```
+
+
+### Overlap between chr1 target genes and other sets overrepresented with SAC
+
+I have found SAC genes overrepresented in:
+
+  -   PC1 drivers
+  -   Genes with low variation
+  -   Genes with significant sex effects
+  -   Chr1 hotspot target genes 
+  
+Let's look at the overlap between those categories. Are we always picking up the same set of genes? Note that, SAC also shows differences in activity between sexes and cell types according to GSVA scores. 
+
+```{r}
+#| warning: false
+#| message: false
+
+chr1_spindle_genes <- g.chr1$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "(?i)spindle") |
+            str_detect(term_name, "(?i)segregation")|
+            str_detect(term_name, "(?i)chromatid") |
+            str_detect(term_name, "(?i)kinetochore") |
+            str_detect(intersection,"Mad2l1")) %>% 
+  select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes)
+
+# from 01b notebook:
+# spindle_genes -- pc1 drivers ORA results
+# spindle_genes_sex_eff -- sex eff genes ORA results
+# spindle_genes_low_var -- low varitation genes ORA results
+
+spindle_genes %>% 
+  mutate( type = "PC1 driver") %>% 
+  rbind(
+    spindle_genes_sex_eff %>% 
+      mutate( type = "Shows significant sex effect")
+  ) %>% 
+  rbind(
+    spindle_genes_low_var %>% 
+      mutate( type = "Shows low variation") 
+  ) %>% 
+  rbind(
+    chr1_spindle_genes %>% 
+      mutate(type = "Chr1 hotspot target")
+  ) %>% 
+  select(mgi_symbol,type) %>% 
+  distinct() %>% 
+  group_by(mgi_symbol) %>% 
+  mutate( type = paste0(collapse = ", ", type), n = n()) %>% 
+  distinct() %>% 
+  create_dt()
+
+
+  
+
+```
+
+
+
+<!-- ### Overlap between chr1 target genes and GPI-anchored proteins -->
+
+<!-- I got a list of proteins that are known to have GPI-anchors from Uniprot and I am looking at their overlap to the targets of chr 1 eQTL hotspot: Nothing! There are no genes with a distant eQTL within the hotspot or genes located within the hotspot. -->
+
+<!-- Next: Can I make any functional connections between the GPI anchored proteins and the chr1 hotspot targets? I manually compared the high confidence physical interaction network with and without the GPI anchored proteins to identify any unique connections that show up when the GPI proteins are included using STRING database. Here are the results: -->
+
+<!-- -   Hmgb1, a target of the chr1 eQTL hotspot, interacts with Cd24a, a protein that has a GPI anchor. No physical interaction, STRING bases its high confidence on co-mentioning in pubmed abstracts in mouse and other organisms. -->
+
+<!-- -   Ptprg, a target of the chr1 eQTL hotspot, interacts with Cntn3, a protein with a GPI anchor. Homologs are reported to be co-expressed and physically interact in other organisms in addition to these genes being co-mentioned in abstracts in mouse and other organisms. -->
+
+<!-- -   Hdac2,a target of the chr1 eQTL hotspot, interacts with Mbd2 and Mbd3, proteins with GPI anchors that also interact with each other. There is experimental evidence for physical interaction between Hdac2 and Mbd3 whereas putative homologs are co-expressed, physically interact in other organisms and are co-mentioned in abstracts in mouse and other organisms. -->
+
+<!-- -   Neo1,a target of the chr1 eQTL hotspot, interacts with Rgma, Rgmb and Hfe2, proteins with GPI anchors that are also predicted to interact with each other. There isn't any evidence for physical interactions in mice but putative homologs are co-expressed, physically interact in other organisms and are co-mentioned in abstracts in mouse and other organisms. -->
+
+<!-- ```{r gpi_genes} -->
+
+<!-- gpi_genes <- read_tsv(here("_data","GPI_anchored_proteins_mouse.tsv")) %>%  -->
+<!--   select( "Gene names  (primary )", "Gene names  (synonym )" ) %>%  -->
+<!--   separate_rows( "Gene names  (synonym )" , sep = " ") %>%  -->
+<!--   pivot_longer( 1:2, names_to = "temp", values_to = "mgi_symbol") %>%  -->
+<!--   select( -temp) %>%  -->
+<!--   filter( !is.na(mgi_symbol)) %>% -->
+<!--   distinct() %>%  -->
+<!--   left_join(all.genes) %>%  -->
+<!--   filter( !is.na(ensembl_gene_id)) -->
+
+<!-- ``` -->
+:::
+
+## eQTL hotspot on chromosome 10 {.tabset .tabset-fade .tabset-pills}
+
+::: {.panel-tabset .nav-pills}
+
+**SUMMARY:** We identified a `r round((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 10))$width/1e06,1)`Mb wide NPC-specific eQTL trans-band on Chromosome 10 at `r formatC((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 10))$start,big.mark=",")`-`r formatC((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 10))$end,big.mark=",")` bp that contains `r formatC((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 10))$distant_npc_rna_lod6,big.mark=",")` NPC eQTL at the suggestive threshold of LOD \> 6. Targets of the hotspot are overrepresented for genes involved in protein processing in the endoplasmic reticulum. There is a 4:4 split in founder haplotype effects for the target distant eQTL where 
+
+```{r}
+#| eval: false
+
+bands.esc.npc.rna %>% filter(seqnames==10)
+
+```
+
+```{r chr10_eqtl}
+#| warning: false
+#| message: false
+
+
+chr10.npc.eQTL1 <- peaks.npc_rna.wesc.overlap %>% 
+  filter( peak_chr == 10) %>% 
+  select( -peak_cM.npc_rna) %>% 
+  left_join(peaks.npc_rna.wEffs) %>% 
+  filter( lod.npc_rna > 6 & !local.npc_rna & !is.na(local.npc_rna) &
+            interp_bp_peak.npc_rna >= filter( bands.esc.npc.rna,chr==10)$start[1] & 
+            interp_bp_peak.npc_rna  <= filter( bands.esc.npc.rna,chr==10)$end[1] ) %>% 
+  mutate( lod.esc_rna = ifelse( is.na(lod.esc_rna), 0, lod.esc_rna)) # gene is not found in the esc data
+
+chr10.esc.eQTL1 <- peaks.esc_rna.wnpc.overlap %>% 
+  filter( peak_chr == 10) %>%
+  select(-peak_cM.esc_rna) %>% 
+  left_join( peaks.esc_rna.wEffs) %>% 
+  filter(lod.esc_rna >6 & !local.esc_rna & !is.na(local.esc_rna) & 
+           interp_bp_peak.esc_rna >= filter( bands.esc.npc.rna,chr==10)$start[1] &
+           interp_bp_peak.esc_rna  <= filter( bands.esc.npc.rna,chr==10)$end[1]) %>% 
+  mutate( lod.npc_rna = ifelse( is.na(lod.npc_rna), 0, lod.npc_rna)) # gene is not found in the npc data  
+
+
+```
+
+### eQTL in the region
+
+```{r chr10_eqtl_plot}
+#| warning: false
+#| message: false
+#| fig-width: 5
+#| fig-height: 5
+
+chr10.npc.eQTL1 %>% 
+  mutate(match =ifelse(match=="npc_rna","NPC eQTL",match), match=ifelse(match=="esc_rna","ESC eQTL",match))  %>%
+  ggplot()+
+  aes(x=lod.esc_rna,y=lod.npc_rna,col=match)+
+  geom_point(size=3,alpha=0.5)+
+  theme_pubclean(base_size = 16)+
+  geom_vline(xintercept = 6,linetype=2)+
+  geom_hline(yintercept=6,linetype=2)+
+  scale_color_manual(values= c("NPC eQTL"=qtl.colors[["npc_rna"]],
+                               "ESC eQTL"=qtl.colors[["esc_rna"]],
+                               "shared"=qtl.colors[["shared"]]))+
+  xlab("LOD score from ESC eQTL scan")+
+  ylab("LOD score from NPC eQTL scan")+
+  xlim(0,10)+
+  ylim(0,10) -> p 
+
+p +
+  geom_point(
+    data = (chr10.esc.eQTL1 %>% 
+              mutate(match =ifelse(match=="npc_rna","NPC eQTL",match), match=ifelse(match=="esc_rna","ESC eQTL",match)) ),
+    size = 3, 
+    alpha = 0.5
+  )
+
+```
+
+### ORA with NPC eQTL in the region
+
+```{r chr10_ora}
+#| warning: false
+#| message: false
+
+g.chr10 <- gost(query =chr10.npc.eQTL1$mgi_symbol,
+                        organism = "mmusculus", 
+                        domain_scope = "custom", 
+                        custom_bg =npc.genes$mgi_symbol, #unique((genes.w.eqtl %>% filter(!local.npc_rna))$mgi_symbol)
+                        correction_method = "fdr",
+                        evcodes = TRUE)
+g.chr10$result <- g.chr10$result %>% filter(term_size < 500)
+
+```
+
+```{r chr10_ora_plot}
+#| warning: false
+#| message: false
+
+gostplot(g.chr10)
+
+```
+
+```{r chr10_ora_table}
+#| warning: false
+#| message: false
+
+
+g.chr10$result %>% 
+  select(source, term_name, intersection_size, term_size , FDR = p_value) %>%
+  filter( FDR < 0.01) %>%
+  mutate_if(is.numeric, formatC, digits =2, format ="fg") %>%
+  create_dt()
+  
+```
+
+### NPC eQTL allele effects
+
+```{r npc_allele_effects_chr10}
+#| warning: false
+#| message: false
+
+haps <- c("A","B","C","D","E","F","G","H")
+
+chr10.npc.eQTL1.mat <- chr10.npc.eQTL1 %>% 
+  filter(!is.na(A.npc_rna)) %>% 
+  select(c(paste0(haps,".npc_rna"),"mgi_symbol")) %>% 
+  distinct() %>%
+  column_to_rownames("mgi_symbol") %>%
+  as.matrix() %>% 
+  t()
+
+annotation <- chr10.npc.eQTL1 %>% 
+  dplyr::mutate(match = ifelse(match =="npc_rna","NPC_eQTL",match)) %>%
+  filter(mgi_symbol %in% colnames(chr10.npc.eQTL1.mat)) %>%
+  filter(!is.na(A.npc_rna)) %>% 
+  select(c(paste0(haps,".npc_rna"),"mgi_symbol","match")) %>% 
+  distinct() %>% 
+  column_to_rownames("mgi_symbol") %>% 
+  select(match) 
+
+annotation_row <- data.frame(strain=c("AJ","B6","129","NOD","NZO","CAST","PWK","WSB"))
+rownames(annotation_row) <- rownames(chr10.npc.eQTL1.mat)  
+
+annot.colors <- list(strain = founder_colors,
+                     match=c( NPC_eQTL=qtl.colors[["npc_rna"]], shared=qtl.colors[["shared"]]))
+
+pheatmap(chr10.npc.eQTL1.mat,
+                                   cluster_rows=T,show_rownames=FALSE,
+                                   cluster_cols=T, show_colnames = FALSE, 
+                                   clustering_method = "complete", 
+                                   scale="none",
+                                   clustering_distance_cols="correlation",
+                                   clustering_distance_rows="correlation",
+                                   #main = "Founder allele effects of chr 1 NPC eQTL hotspot genes",
+                                   annotation_col= annotation, 
+                                   annotation_row = annotation_row, 
+                                   annotation_colors = annot.colors, 
+                                   cutree_rows = 2)
+
+```
+
+### Mediation of target eQTL
+
+```{r chr10_meds}
+#| warning: false
+#| message: false
+#| results: hide
+
+eqtl_esc_rna_meds %>%
+  inner_join(select(chr10.npc.eQTL1, "target.id" = ensembl_gene_id, "qtl.chr" = peak_chr)) -> chr10.esc.meds
+
+eqtl_npc_rna_meds %>% 
+  inner_join(select(chr10.npc.eQTL1, "target.id" = ensembl_gene_id, "qtl.chr" = peak_chr)) -> chr10.npc.meds
+
+chr10.esc.meds %>%
+  mutate( type="esc") %>% 
+  rbind( chr10.npc.meds %>%  mutate( type ="npc")) %>% 
+  mutate(mediation.lod = ifelse(target.symbol == mediator.symbol, NA, mediation.lod)) %>%
+  mutate(lod_drop = target.lod - mediation.lod) %>%
+  group_by(target.symbol) %>%
+  arrange(mediation.lod) %>%
+  mutate(rank = rep(seq(1:n()))) -> chr10.meds.ranked
+
+chr10.meds.ranked.sum <- chr10.meds.ranked %>%
+  filter(rank %in% c( 1)) %>% #filter(mediator.symbol =="Lifr") %>%  select(lod_drop)
+  group_by(mediator.symbol,type) %>%
+  summarize(n = length(target.symbol), min_drop = min(lod_drop, na.rm = T), max_drop = max(lod_drop, na.rm = T), med_drop = median(lod_drop, na.rm = T)) %>%
+  arrange(desc(n)) %>% 
+  mutate(mediator.symbol = str_c(toupper(type)," , " ,mediator.symbol))
+
+chr10.meds.ranked.sum
+
+```
+
+```{r chr10_meds_plot}
+#| warning: false
+#| message: false
+#| fig-width: 14
+#| fig-height: 5
+
+results <- chr10.meds.ranked %>%
+  ungroup() %>%
+  select(mediator.symbol, target.symbol, mediation.lod, target.lod, lod_drop, type) %>%
+  mutate(mediator.symbol = str_c(toupper(type)," , " ,mediator.symbol)) %>% 
+  select(-mediation.lod, -target.lod,- type) %>%
+  filter((mediator.symbol %in% str_c(chr10.meds.ranked.sum$mediator.symbol[1:5]))) %>%
+  mutate(lod_drop = ifelse(lod_drop < 0, 0, lod_drop), lod_drop = ifelse(lod_drop > 6, 6, lod_drop)) %>%
+  rename(target = target.symbol, LOD_diff = lod_drop)
+
+p <- ggplot(results, aes(y = mediator.symbol, x = target)) +
+  geom_point(aes(color = LOD_diff, size = exp(LOD_diff) / 30), alpha = 0.6) +
+  scale_color_gradientn(
+    colors = c("white", "firebrick3", "navy"),
+    values = scales::rescale(c(0, 3, 6)),
+    name = "LOD\ndifference", limits = c(0, 6)
+  ) +
+  scale_size(breaks = 0:6, labels = as.character(0:6), range = c(0, 8)) +
+  guides(size = "none") +
+  theme_pubclean(base_size = 18) +
+  theme(
+    axis.text.y = element_text(size = 14, hjust = 1),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 0),
+    axis.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank()
+  ) +
+  xlab("Target eQTL")+
+  ylab("Mediator")
+p
+
+```
+
+:::
+
+## eQTL hotspot on chromosome 11 {.tabset .tabset-fade .tabset-pills}
+
+::: {.panel-tabset .nav-pills}
+
+**SUMMARY:** We identified a `r round((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 11))$width/1e06,1)`Mb wide NPC-specific eQTL trans-band on Chromosome 11 at `r formatC((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 11))$start,big.mark=",")`-`r formatC((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 11))$end,big.mark=",")` bp that contains `r formatC((bands.esc.npc.rna %>% filter(distant_npc_rna > 20, seqnames == 11))$distant_npc_rna_lod6,big.mark=",")` NPC eQTL at the suggestive threshold of LOD \> 6.
+
+```{r, eval = FALSE}
+#| eval: false
+bands.esc.npc.rna %>% filter(seqnames==11)
+
+```
+
+```{r chr11_eqtl}
+#| warning: false
+#| message: false
+
+chr11.npc.eQTL1 <- peaks.npc_rna.wesc.overlap %>% 
+  filter( peak_chr == 11) %>% 
+  select( -peak_cM.npc_rna) %>% 
+  left_join( peaks.npc_rna.wEffs) %>% 
+  filter( lod.npc_rna > 6 & !local.npc_rna & !is.na(local.npc_rna) &
+            interp_bp_peak.npc_rna > filter( bands.esc.npc.rna,chr==11)$start[1] & 
+            interp_bp_peak.npc_rna  < filter( bands.esc.npc.rna,chr==11)$end[1] ) %>% 
+  mutate( lod.esc_rna = ifelse( is.na(lod.esc_rna), 0, lod.esc_rna)) # gene not found in the esc data
+
+chr11.esc.eQTL1 <-  peaks.esc_rna.wnpc.overlap %>% 
+  filter( peak_chr == 11) %>%
+  select(-peak_cM.esc_rna) %>% 
+  left_join(peaks.esc_rna.wEffs) %>% 
+  filter(lod.esc_rna >6 & !local.esc_rna & !is.na(local.esc_rna) & 
+           interp_bp_peak.esc_rna > filter( bands.esc.npc.rna,chr==11)$start[1] &
+           interp_bp_peak.esc_rna  < filter( bands.esc.npc.rna,chr==11)$end[1]) %>% 
+   mutate( lod.npc_rna = ifelse( is.na(lod.npc_rna), 0, lod.npc_rna)) # gene is not found in the npc data
+
+
+```
+
+### eQTL in the region
+
+```{r chr11_eqtl_plot}
+#| warning: false
+#| message: false
+#| fig-width: 5
+#| fig-height: 5
+
+chr11.npc.eQTL1 %>% 
+  mutate(match =ifelse(match=="npc_rna","NPC eQTL",match), match=ifelse(match=="esc_rna","ESC eQTL",match))  %>%
+  ggplot()+
+  aes(x=lod.esc_rna,y=lod.npc_rna,col=match)+
+  geom_point(size=3,alpha=0.5)+
+  theme_pubclean(base_size = 16)+
+  geom_vline(xintercept = 6,linetype=2)+
+  geom_hline(yintercept=6,linetype=2)+
+  scale_color_manual(values= c("NPC eQTL"=qtl.colors[["npc_rna"]],
+                               "ESC eQTL"=qtl.colors[["esc_rna"]],
+                               "shared"=qtl.colors[["shared"]]))+
+  xlab("LOD score from ESC eQTL scan")+
+  ylab("LOD score from NPC eQTL scan")+
+  xlim(0,10)+
+  ylim(0,10) -> p
+
+p+
+  geom_point(
+    data = (chr11.esc.eQTL1 %>% 
+               mutate(match =ifelse(match=="npc_rna","NPC eQTL",match), match=ifelse(match=="esc_rna","ESC eQTL",match))),
+    size = 3, 
+    alpha = 0.5
+  )
+
+```
+
+### ORA with NPC eQTL in the region
+
+```{r chr11_ora}
+#| warning: false
+#| message: false
+
+g.chr11 <- gost(query =chr11.npc.eQTL1$mgi_symbol,
+                        organism = "mmusculus", 
+                        domain_scope = "custom", 
+                        custom_bg =npc.genes$mgi_symbol, #unique((genes.w.eqtl %>% filter(!local.npc_rna))$mgi_symbol)
+                        correction_method = "fdr",
+                        evcodes = TRUE)
+g.chr11$result <- g.chr11$result %>% filter(term_size < 500)
+
+```
+
+```{r chr11_ora_plot}
+#| warning: false
+#| message: false
+
+gostplot(g.chr11, capped = FALSE)
+
+```
+
+```{r chr11_ora_table}
+#| warning: false
+#| message: false
+
+g.chr11$result %>% 
+  select(source, term_name, intersection_size, term_size , FDR = p_value) %>%
+  filter( FDR < 0.01) %>%
+  mutate_if(is.numeric, formatC, digits =2, format ="fg") %>%
+  create_dt()
+  
+```
+
+### NPC eQTL allele effects
+
+```{r npc_allele_effects_chr11}
+#| warning: false
+#| message: false
+
+haps <- c("A","B","C","D","E","F","G","H")
+
+chr11.npc.eQTL1.mat <- chr11.npc.eQTL1 %>% 
+  filter(!is.na(A.npc_rna)) %>% 
+  select(c(paste0(haps,".npc_rna"),"mgi_symbol")) %>% 
+  distinct() %>%
+  column_to_rownames("mgi_symbol") %>%
+  as.matrix() %>% 
+  t()
+
+annotation <- chr11.npc.eQTL1 %>% 
+  dplyr::mutate(match = ifelse(match =="npc_rna","NPC_eQTL",match)) %>%
+  filter(mgi_symbol %in% colnames(chr11.npc.eQTL1.mat)) %>%
+  filter(!is.na(A.npc_rna)) %>% 
+  select(c(paste0(haps,".npc_rna"),"mgi_symbol","match")) %>% 
+  distinct() %>% 
+  column_to_rownames("mgi_symbol") %>% 
+  select(match) 
+
+annotation_row <- data.frame(strain=c("AJ","B6","129","NOD","NZO","CAST","PWK","WSB"))
+rownames(annotation_row) <- rownames(chr11.npc.eQTL1.mat)  
+
+annot.colors <- list(strain = founder_colors,
+                     match=c( NPC_eQTL=qtl.colors[["npc_rna"]], shared=qtl.colors[["shared"]]))
+
+pheatmap(chr11.npc.eQTL1.mat,
+                                   cluster_rows=T,show_rownames=FALSE,
+                                   cluster_cols=T, show_colnames = FALSE, 
+                                   clustering_method = "complete", 
+                                   scale="none",
+                                   clustering_distance_cols="correlation",
+                                   clustering_distance_rows="correlation",
+                                   #main = "Founder allele effects of chr 1 NPC eQTL hotspot genes",
+                                   annotation_col= annotation, 
+                                   annotation_row = annotation_row, 
+                                   annotation_colors = annot.colors, 
+                                   cutree_rows = 2)
+
+```
+
+### ESC eQTL allele effects
+
+```{r esc_allele_effects_chr11}
+#| warning: false
+#| message: false
+
+haps <- c("A","B","C","D","E","F","G","H")
+
+chr11.esc.eQTL1.mat <- chr11.esc.eQTL1 %>% 
+  filter(!is.na(A.esc_rna)) %>% 
+  select(c(paste0(haps,".esc_rna"),"mgi_symbol")) %>% 
+  distinct() %>%
+  column_to_rownames("mgi_symbol") %>%
+  as.matrix() %>% 
+  t()
+
+annotation <- chr11.esc.eQTL1 %>% 
+  dplyr::mutate(match = ifelse(match =="esc_rna","ESC_eQTL",match)) %>%
+  filter(mgi_symbol %in% colnames(chr11.esc.eQTL1.mat)) %>%
+  filter(!is.na(A.esc_rna)) %>% 
+  select(c(paste0(haps,".esc_rna"),"mgi_symbol","match")) %>% 
+  distinct() %>% 
+  column_to_rownames("mgi_symbol") %>% 
+  select(match) 
+
+annotation_row <- data.frame(strain=c("AJ","B6","129","NOD","NZO","CAST","PWK","WSB"))
+rownames(annotation_row) <- rownames(chr11.esc.eQTL1.mat)  
+
+annot.colors <- list(strain = founder_colors,
+                     match=c( ESC_eQTL=qtl.colors[["esc_rna"]], shared=qtl.colors[["shared"]]))
+
+pheatmap(chr11.esc.eQTL1.mat,
+                                   cluster_rows=T,show_rownames=FALSE,
+                                   cluster_cols=T, show_colnames = FALSE, 
+                                   clustering_method = "complete", 
+                                   scale="none",
+                                   clustering_distance_cols="correlation",
+                                   clustering_distance_rows="correlation",
+                                   annotation_col= annotation, 
+                                   annotation_row = annotation_row, 
+                                   annotation_colors = annot.colors, 
+                                   cutree_rows = 2)
+
+```
+
+### Mediation of target NPC eQTL
+
+```{r chr11_meds}
+#| warning: false
+#| message: false
+#| results: hide
+eqtl_esc_rna_meds %>%
+  inner_join(select(chr11.npc.eQTL1, "target.id" = ensembl_gene_id, "qtl.chr" = peak_chr)) -> chr11.esc.meds
+
+eqtl_npc_rna_meds %>% 
+  inner_join(select(chr11.npc.eQTL1, "target.id" = ensembl_gene_id, "qtl.chr" = peak_chr)) -> chr11.npc.meds
+
+chr11.esc.meds %>%
+  mutate( type="esc") %>% 
+  rbind( chr11.npc.meds %>%  mutate( type ="npc")) %>% 
+  mutate(mediation.lod = ifelse(target.symbol == mediator.symbol, NA, mediation.lod)) %>%
+  mutate(lod_drop = target.lod - mediation.lod) %>%
+  group_by(target.symbol) %>%
+  arrange(mediation.lod) %>%
+  mutate(rank = rep(seq(1:n()))) -> chr11.meds.ranked
+
+chr11.meds.ranked.sum <- chr11.meds.ranked %>%
+  filter(rank %in% c( 1)) %>% #filter(mediator.symbol =="Lifr") %>%  select(lod_drop)
+  group_by(mediator.symbol,type) %>%
+  summarize(n = length(target.symbol), min_drop = min(lod_drop, na.rm = T), max_drop = max(lod_drop, na.rm = T), med_drop = median(lod_drop, na.rm = T)) %>%
+  arrange(desc(n)) %>% 
+  mutate(mediator.symbol = str_c(toupper(type)," , " ,mediator.symbol))
+
+chr11.meds.ranked.sum
+
+```
+
+```{r chr11_npc_eqtl_run_mediation}
+#| warning: false
+#| message: false
+#| eval: false
+#| cache: true
+
+
+chr11_npc_eqtl_npc_meds <- do_global_mediation(gene.name = chr11.npc.eQTL1$mgi_symbol[1],
+                    p.chr = chr11.npc.eQTL1$peak_chr[1],
+                    peak.info = chr11.npc.eQTL1,
+                    probs = probs.npc_rna,
+                    expr.target = exprZ.npc_rna,
+                    expr.mediator = exprZ.npc_rna,
+                    covar= covar.npc_rna,
+                    med.type = "n-n",
+                    genes = npc.genes)
+
+for(i in 2:nrow(chr11.npc.eQTL1)){
+  meds <- do_global_mediation(gene.name = chr11.npc.eQTL1$mgi_symbol[i],
+                    p.chr = chr11.npc.eQTL1$peak_chr[i],
+                    peak.info = chr11.npc.eQTL1,
+                    probs = probs.npc_rna,
+                    expr.target = exprZ.npc_rna,
+                    expr.mediator = exprZ.npc_rna,
+                    covar= covar.npc_rna,
+                    med.type = "n-n",
+                    genes = npc.genes)
+  chr11_npc_eqtl_npc_meds <- rbind(chr11_npc_eqtl_npc_meds, meds)
+}
+
+chr11_npc_eqtl_esc_meds <- do_global_mediation(gene.name = chr11.npc.eQTL1$mgi_symbol[1],
+                    p.chr = chr11.npc.eQTL1$peak_chr[1],
+                    peak.info = chr11.npc.eQTL1,
+                    probs = shared.probs.npc_rna,
+                    expr.target = exprZ.npc_rna[shared.samples,,drop=FALSE],
+                    expr.mediator = exprZ.esc_rna[shared.samples,,drop=F],
+                    covar= covar.npc_rna[shared.samples,,drop=F],
+                    med.type = "e-n",
+                    genes = npc.genes)
+
+for(i in 2:nrow(chr11.npc.eQTL1)){
+  meds <- do_global_mediation(gene.name = chr11.npc.eQTL1$mgi_symbol[i],
+                    p.chr = chr11.npc.eQTL1$peak_chr[i],
+                    peak.info = chr11.npc.eQTL1,
+                    probs = shared.probs.npc_rna,
+                    expr.target = exprZ.npc_rna[shared.samples,,drop=FALSE],
+                    expr.mediator = exprZ.esc_rna[shared.samples,,drop=F],
+                    covar= covar.npc_rna[shared.samples,,drop=F],
+                    med.type = "e-n",
+                    genes = npc.genes)
+  chr11_npc_eqtl_esc_meds <- rbind(chr11_npc_eqtl_esc_meds, meds)
+}
+
+```
+
+```{r, eval = FALSE}
+#| eval: false
+# I reran the mediation locally to see if the results I get are the same and they are identical. So no worries on the mediation results! Mainly, filtering based on z-threshold removes a lot of mediators that are not 'good enough'. 
+
+chr11_npc_eqtl_npc_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind(chr11_npc_eqtl_esc_meds %>% 
+          mutate(type ="esc")) %>% 
+    left_join( chr11.npc.eQTL1 %>% 
+                 select( target = mgi_symbol, 
+                         peak_chr, 
+                         target_lod = lod.npc_rna,
+                         target_pos = interp_bp_peak.npc_rna,
+                         target_chr = gene_chr)) %>%
+  select(
+    target,
+    peak_chr,
+    target_lod,
+    target_pos,
+    target_chr,
+    mediator_id = ensembl_gene_id, 
+    mediator,
+    mediator_chr = gene_chr, 
+    mediator_midpoint = midpoint,
+    mediation_lod = LOD,
+    type
+  ) %>% 
+  group_by( target, peak_chr, target_lod, target_chr,type) %>% 
+  mutate( scaled_LOD = scale(mediation_lod)) %>% 
+  filter( abs(target_pos-mediator_midpoint) <= 10e6 &   # filter within 10Mb
+          peak_chr == mediator_chr,
+          scaled_LOD < -4 # z threshold -4
+          )   -> chr11_npc_eqtl_meds
+  
+chr11_npc_eqtl_meds %>% 
+  mutate(mediation_lod = ifelse(target == mediator, NA, mediation_lod)) %>%
+  mutate(lod_drop = target_lod - mediation_lod) %>%
+  group_by(target) %>%
+  arrange(mediation_lod) %>%
+  mutate(rank = rep(seq(1:n()))) -> chr11.meds.ranked
+
+chr11.meds.ranked.sum <- chr11.meds.ranked %>%
+  filter(rank %in% c( 1)) %>% 
+  group_by(mediator,type) %>%
+  summarize(n = length(target), min_drop = min(lod_drop, na.rm = T), max_drop = max(lod_drop, na.rm = T), med_drop = median(lod_drop, na.rm = T)) %>%
+  arrange(desc(n)) %>% 
+  mutate(mediator = str_c(toupper(type)," , " ,mediator))
+
+chr11.meds.ranked.sum
+
+```
+
+```{r chr11_meds_plot}
+#| warning: false
+#| message: false
+#| fig-width: 14
+#| fig-height: 5
+
+
+results <- chr11.meds.ranked %>%
+  ungroup() %>%
+  select(mediator.symbol, target.symbol, mediation.lod, target.lod, lod_drop, type) %>%
+  mutate(mediator.symbol = str_c(toupper(type)," , " ,mediator.symbol)) %>% 
+  select(-mediation.lod, -target.lod,- type) %>%
+  filter((mediator.symbol %in% str_c(chr11.meds.ranked.sum$mediator.symbol[1:5]))) %>%
+  mutate(lod_drop = ifelse(lod_drop < 0, 0, lod_drop), lod_drop = ifelse(lod_drop > 6, 6, lod_drop)) %>%
+  rename(target = target.symbol, LOD_diff = lod_drop)
+
+p <- ggplot(results, aes(y = mediator.symbol, x = target)) +
+  geom_point(aes(color = LOD_diff, size = exp(LOD_diff) / 30), alpha = 0.6) +
+  scale_color_gradientn(
+    colors = c("white", "firebrick3", "navy"),
+    values = scales::rescale(c(0, 3, 6)),
+    name = "LOD\ndifference", limits = c(0, 6)
+  ) +
+  scale_size(breaks = 0:6, labels = as.character(0:6), range = c(0, 8)) +
+  guides(size = "none") +
+  theme_pubclean(base_size = 18) +
+  theme(
+    axis.text.y = element_text(size = 14, hjust = 1),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 0),
+    axis.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank()
+  ) +
+  xlab("Target eQTL")+
+  ylab("Mediator")
+p
+
+```
+
+### Mediation of target ESC eQTL
+
+```{r chr11_esc_eqtl_run_mediation}
+#| warning: false
+#| message: false
+#| cache: true
+
+
+chr11_esc_eqtl_esc_meds <- do_global_mediation(gene.name = chr11.esc.eQTL1$mgi_symbol[1],
+                    p.chr = chr11.esc.eQTL1$peak_chr[1],
+                    peak.info = chr11.esc.eQTL1,
+                    probs = probs.esc_rna,
+                    expr.target = exprZ.esc_rna,
+                    expr.mediator = exprZ.esc_rna,
+                    covar= covar.esc_rna,
+                    med.type = "e-e",
+                    genes = esc.genes)
+
+for(i in 2:nrow(chr11.esc.eQTL1)){
+  meds <- do_global_mediation(gene.name = chr11.esc.eQTL1$mgi_symbol[i],
+                    p.chr = chr11.esc.eQTL1$peak_chr[i],
+                    peak.info = chr11.esc.eQTL1,
+                    probs = probs.esc_rna,
+                    expr.target = exprZ.esc_rna,
+                    expr.mediator = exprZ.esc_rna,
+                    covar= covar.esc_rna,
+                    med.type = "e-e",
+                    genes = esc.genes)
+  chr11_esc_eqtl_esc_meds <- rbind(chr11_esc_eqtl_esc_meds, meds)
+}
+
+chr11_esc_eqtl_npc_meds <- do_global_mediation(gene.name = chr11.esc.eQTL1$mgi_symbol[1],
+                    p.chr = chr11.esc.eQTL1$peak_chr[1],
+                    peak.info = chr11.esc.eQTL1,
+                    probs = shared.probs.esc_rna,
+                    expr.target = exprZ.esc_rna[shared.samples,,drop=FALSE],
+                    expr.mediator = exprZ.npc_rna[shared.samples,,drop=F],
+                    covar= covar.esc_rna[shared.samples,,drop=F],
+                    med.type = "n-e",
+                    genes = esc.genes)
+
+for(i in 2:nrow(chr11.esc.eQTL1)){
+  meds <- do_global_mediation(gene.name = chr11.esc.eQTL1$mgi_symbol[i],
+                    p.chr = chr11.esc.eQTL1$peak_chr[i],
+                    peak.info = chr11.esc.eQTL1,
+                    probs = shared.probs.esc_rna,
+                    expr.target = exprZ.esc_rna[shared.samples,,drop=FALSE],
+                    expr.mediator = exprZ.npc_rna[shared.samples,,drop=F],
+                    covar= covar.esc_rna[shared.samples,,drop=F],
+                    med.type = "n-e",
+                    genes = esc.genes)
+  chr11_esc_eqtl_npc_meds <- rbind(chr11_esc_eqtl_npc_meds, meds)
+}
+
+```
+
+```{r}
+
+chr11_esc_eqtl_npc_meds %>% 
+  mutate( type = "npc") %>% 
+  rbind(chr11_esc_eqtl_esc_meds %>% 
+          mutate(type ="esc")) %>% 
+    left_join( chr11.esc.eQTL1 %>% 
+                 select( target = mgi_symbol, 
+                         peak_chr, 
+                         target_lod = lod.npc_rna,
+                         target_pos = interp_bp_peak.npc_rna,
+                         target_chr = gene_chr)) %>%
+  select(
+    target,
+    peak_chr,
+    target_lod,
+    target_pos,
+    target_chr,
+    mediator_id = ensembl_gene_id, 
+    mediator,
+    mediator_chr = gene_chr, 
+    mediator_midpoint = midpoint,
+    mediation_lod = LOD,
+    type
+  ) %>% 
+  group_by( target, peak_chr, target_lod, target_chr,type) %>% 
+  mutate( scaled_LOD = scale(mediation_lod)) %>% 
+  filter( abs(target_pos-mediator_midpoint) <= 10e6 &   # filter within 10Mb
+          peak_chr == mediator_chr,
+          scaled_LOD < -4 # z threshold -4
+          )   -> chr11_esc_eqtl_meds
+  
+chr11_esc_eqtl_meds %>% 
+  mutate(mediation_lod = ifelse(target == mediator, NA, mediation_lod)) %>%
+  mutate(lod_drop = target_lod - mediation_lod) %>%
+  filter(lod_drop >0) %>% 
+  group_by(target) %>%
+  arrange(mediation_lod) %>%
+  mutate(rank = rep(seq(1:n()))) -> chr11.meds.ranked
+
+chr11.meds.ranked.sum <- chr11.meds.ranked %>%
+  filter(rank %in% c( 1)) %>% 
+  group_by(mediator,type) %>%
+  summarize(n = length(target), min_drop = min(lod_drop, na.rm = T), max_drop = max(lod_drop, na.rm = T), med_drop = median(lod_drop, na.rm = T)) %>%
+  arrange(desc(n)) %>% 
+  mutate(mediator = str_c(toupper(type)," , " ,mediator))
+
+chr11.meds.ranked.sum
+
+```
+
+```{r chr11_meds_plot2}
+#| warning: false
+#| message: false
+#| fig-width: 14
+#| fig-height: 5
+
+results <- chr11.meds.ranked %>%
+  ungroup() %>%
+  select(mediator, target, mediation_lod, target_lod, lod_drop, type) %>%
+  mutate(mediator = str_c(toupper(type)," , " ,mediator)) %>% 
+  select(-mediation_lod, -target_lod,-type) %>%
+  filter((mediator %in% str_c(chr11.meds.ranked.sum$mediator[1:5]))) %>%
+  mutate(lod_drop = ifelse(lod_drop < 0, 0, lod_drop), lod_drop = ifelse(lod_drop > 6, 6, lod_drop)) %>%
+  rename( LOD_diff = lod_drop)
+
+p <- ggplot(results, aes(y = mediator, x = target)) +
+  geom_point(aes(color = LOD_diff, size = exp(LOD_diff) / 30), alpha = 0.6) +
+  scale_color_gradientn(
+    colors = c("white", "firebrick3", "navy"),
+    values = scales::rescale(c(0, 3, 6)),
+    name = "LOD\ndifference", limits = c(0, 6)
+  ) +
+  scale_size(breaks = 0:6, labels = as.character(0:6), range = c(0, 8)) +
+  guides(size = "none") +
+  theme_pubclean(base_size = 18) +
+  theme(
+    axis.text.y = element_text(size = 14, hjust = 1),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 0),
+    axis.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank()
+  ) +
+  xlab("Target eQTL")+
+  ylab("Mediator")
+p
+
+```
+
+
+:::
+
+
+
+
+
+

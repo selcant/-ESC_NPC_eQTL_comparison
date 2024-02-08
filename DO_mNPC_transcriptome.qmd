@@ -31,6 +31,9 @@ options(stringsAsFactors = F)
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 knitr::opts_knit$set(progress=FALSE)
 
+# qtl mapping
+library(qtl2)
+
 # # plotting
 library(ggpubr)
 library(igraph)
@@ -68,18 +71,2245 @@ rename <- dplyr::rename # I am adding this explicitly
 # setting path
 library(here)
 
-```
+# Making downloadable data tables
+# https://www.r-bloggers.com/vignette-downloadable-tables-in-rmarkdown-with-the-dt-package/
+create_dt <- function(x){
+  DT::datatable(x,
+                extensions = 'Buttons',
+                rownames = FALSE, 
+                filter="top",
+                options = list(dom = 'Blfrtip',
+                               buttons = c('copy', 'csv', 'excel'),
+                               pageLength = 5, 
+                               scrollX= TRUE
+                               ))
+  
+}
 
+rankZ <- function (x) {
+  x <- rank(x, na.last = "keep", ties.method = "average")/(sum(!is.na(x)) + 1)
+  qnorm(x)
+}
+
+interp_bp <- function(df) {
+  chroms <- c(as.character(1:19), "X")
+  df <- arrange(df, peak_chr, peak_cM)
+  peak_gpos <- select(df, peak_chr, peak_cM)
+  chr <- peak_gpos$peak_chr
+  f <- factor(chr, chroms)
+  peak_gcoord_list <- split(peak_gpos$peak_cM, f)
+  peak_pcoord_list <- qtl2::interp_map(peak_gcoord_list, gmap, pmap)
+  df$interp_bp_peak <- unsplit(peak_pcoord_list, f)
+  df
+}
+
+```
 
 ```{r load_data}
+#| warning: false
+#| message: false
+
+
+# Note: I am keeping v91 ids + annotations for these two data sets. I am not going to add the protein data to these so I think it is okay. 
+
+# The mediations with ESC/NPC transcript were done for all NPC eQTL lod >6 using annotations from v84 ensembl ids and Duy's script that adds LOD at the peak, causality test. I am not using the causality test to filter anything but I do use lod drop z-threshold (z< -4) and positional threshold (diff < 10Mb) for filtering.
+
+# I am re-writing the overlap script for ESC/NPC eQTL without the ESC pQTL and will add allele effect correlations to it too . 
+
+all.genes_v91 <- read_tsv( file = here("_data","/ENSMUSGid_to_symbol_v91.txt")) %>% 
+  rename( ensembl_gene_id = `Gene stable ID`,
+          gene_start = `Gene start (bp)`, 
+          gene_end = `Gene end (bp)`, 
+          gene_chr = `Chromosome/scaffold name`,
+          gene_biotype = `Gene type`, 
+          mgi_symbol = `MGI symbol`) %>% 
+  mutate( midpoint = (gene_start+gene_end)/2)
+
+# ESC expression
+load(here("_data/DO_mESC_paired_eQTL_forMapping.RData"))
+raw.expr.esc_rna <- esc.raw.expr
+exprZ.esc_rna <- esc.exprZ
+kinship_loco.esc_rna <- esc.kinship_loco
+probs.esc_rna <- esc.probs
+covar.esc_rna <- esc.covar
+covarTidy.esc_rna <- covarTidy
+exprComBat.esc_rna <- esc.expr.ComBat
+expr.esc_rna <- expm1(exprComBat.esc_rna) # re-transforming since the data was log(x+1) before combat
+expr.esc_rna[expr.esc_rna < 0] <- 0
+expr.esc_rna <- t(expr.esc_rna)
+rm(esc.expr, esc.exprZ, esc.kinship_loco, esc.probs, esc.expr.ComBat, esc.raw.expr, covarTidy, exprComBat.esc_rna, esc.covar, esc.covarTidy)
+
+# NPC expression
+load(here("_data/DO_mNPC_paired_eQTL_forMapping.RData"))
+raw.expr.npc_rna <- npc.raw.expr
+exprZ.npc_rna <- npc.exprZ
+kinship_loco.npc_rna <- npc.kinship_loco
+probs.npc_rna <- npc.probs
+covar.npc_rna <- npc.covar
+covarTidy.npc_rna <- npc.covarTidy
+exprComBat.npc_rna <- npc.expr.ComBat
+expr.npc_rna <- expm1(exprComBat.npc_rna) # re-transforming since the data was log(x+1) before combat
+expr.npc_rna[expr.npc_rna < 0] <- 0
+expr.npc_rna <- t(expr.npc_rna)
+rm(npc.expr, npc.exprZ, npc.kinship_loco, npc.probs, npc.expr.ComBat, npc.raw.expr, exprComBat.npc_rna, npc.covar, npc.covarTidy)
+
+# Get v84 gene annotations
+# all.genes_v84 <- ensimplR::batchGenes( ids = union(colnames(expr.esc_rna), colnames(expr.npc_rna)), species = 'Mm', release = 84) 
+# # Let's save these so I don't have to depend on ensimplR every time
+# write_tsv(all.genes_v84, file = here("_data","ENSMUSGid_to_symbol_v84.txt"))
+all.genes_v84 <- read_tsv( here("_data","ENSMUSGid_to_symbol_v84.txt"))
+all.genes_v84 <- all.genes_v84 %>% 
+  mutate( midpoint = (gene_start+gene_end)/2) %>% 
+  # add gene_biotype
+  left_join( all.genes_v91 %>%  select(ensembl_gene_id, gene_biotype))
+
+# get all genes that contain the union of both data sets + esc/npc gene lists.
+all.genes <- filter(all.genes_v84, ensembl_gene_id %in% c(colnames(exprZ.esc_rna), colnames(exprZ.npc_rna)) )
+esc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.esc_rna)) # note that we are missing annotations for 19 ids, ensembl say they are deprecated.
+npc.genes <- filter( all.genes, ensembl_gene_id %in% colnames(exprZ.npc_rna)) 
+
+
+## shared data
+# get the set of shared genes
+shared.genes <- intersect(colnames(expr.esc_rna),colnames(expr.npc_rna))
+
+# get the set of shared samples
+shared.samples <- intersect(rownames(expr.esc_rna)[!grepl("repB",rownames(expr.esc_rna))],
+                            rownames(expr.npc_rna)[!grepl("repB",rownames(expr.npc_rna))])
+
+# let's subset the expression matrices for shared genes + samples 
+shared.expr.npc_rna <- expr.npc_rna[shared.samples,shared.genes ]
+shared.expr.esc_rna  <- expr.esc_rna[shared.samples,shared.genes]
+
+# lifr genotypes
+# get_LIFR_genotypes
+# using Dan's code to get LIFR genotypes for the full list of animals
+probs <- probs.npc_rna
+markers <- tibble(name = dimnames(probs[[15]])[[3]]) %>%
+  mutate(name2 = name) %>%
+  separate(name2, into = c("chrom", "pos"), sep = "_", convert = TRUE)
+
+# LIFr SNP is chr15:7116944 (rs50454566)
+mm <- filter(markers, chrom == "15", pos > 7090000, pos < 7130000) # 3 markers
+probs2 <- probs$`15`[, , mm$name]
+
+closest_geno <- function(p, tol = 0.01) {
+  if (sum(abs(p - c(1, 0))) < tol) {
+    return("A")
+  }
+  if (sum(abs(p - c(0, 1))) < tol) {
+    return("B")
+  }
+  if (sum(abs(p - c(0.5, 0.5))) < tol) {
+    return("H")
+  }
+  return(NA)
+}
+call_geno <- function(mat) {
+  # mat is nsamp*8 (haps)
+  # A = A_J
+  # B = B6
+  # C = 129
+  # D = NOD
+  # E = NZO
+  # F = CAST
+  # G = PWK
+  # H = WSB
+  # I want to divide NOD + CAST + PWK + WSB
+  # vs. the other four
+  grp <- c("A", "A", "A", "B", "A", "B", "B", "B")
+  collapsed <- apply(mat, 1, function(x) tapply(x, grp, sum))
+  apply(collapsed, 2, closest_geno)
+}
+
+probs3 <- apply(probs2, 3, call_geno)
+# assert_that(noNA(probs3))
+one <- probs3[, 1] # marker left of Lifr
+two <- probs3[, 2] # closest marker to Lifr
+three <- probs3[, 3] # marker right of Lifr
+# "PB360.49" has an ancestry switch between markers 1 & 2!
+
+
+# Get samples in group A (inbred strains) and group B (wild-derived + NOD)
+inbred <- rownames(probs[[1]])[one == "A" & two == "A" & three == "A"]
+wildder <- rownames(probs[[1]])[one == "B" & two == "B" & three == "B"]
+hets <- rownames(probs[[1]])[one == "H" & two == "H" & three == "H"]
+# cat(inbred, sep="\n", file="lifr_genotype_inbred.txt")
+# cat(wildder, sep="\n", file="lifr_genotype_wildder.txt")
+# cat(hets, sep="\n", file="lifr_genotype_het.txt")
+#
+data_frame(
+  lifr_geno = factor(c(rep("Ref", length(inbred)), c(rep("Alt", length(wildder))), c(rep("Het", length(hets))))),
+  lifr = factor(c(rep(0, length(inbred)), c(rep(1, length(wildder))), c(rep(2, length(hets))))),
+  rowname = c((inbred), (wildder), (hets))
+) %>%
+  mutate(rowname = ifelse(is.na(rowname), "PB360.49_repA", rowname)) -> covar.lifr
+
+covarTidy.npc_rna %>% 
+  left_join( covar.lifr, by = c("sampleid"="rowname")) -> covarTidy.npc_rna
+
+# founder colors
+founder_colors <- c(AJ = "#F0E442", B6 = "#555555", `129` = "#E69F00", NOD = "#0072B2",
+   NZO = "#56B4E9", CAST = "#009E73", PWK = "#D55E00", WSB = "#CC79A7")
+
+# qtl colors
+qtl.colors <- c( esc_rna = "#009E73", 
+                 npc_rna = "#D55E00",
+                 shared = "#7570B3")
+#read in mitotic spindle assembly genes, go term 
+sac_genes <- read_tsv(here("_data","mitotic_sac_genes.tsv"), col_names = c("mgi_number","mgi_symbol","description", "gene_biotype","gene_chr")) %>% 
+  select(-mgi_number, -description, -gene_biotype,-gene_chr) %>% 
+  left_join(all.genes)
 
 ```
 
+Here, I am contrasting global gene expression between embryonic stem cells (ESCs) and neural progenitor cells (NPCs) derived from Diversity Outbred (DO) mice.
+We analyzed RNA-seq data from a total of `r nrow(expr.esc_rna)` ESC and `r nrow(expr.npc_rna)` NPC lines; 127 lines had RNA-seq data for both ESCs and NPCs.
+After filtering out genes with low expression and genes not expressed in at least half of the samples, we detect `r formatC(ncol(expr.esc_rna),big.mark = ",")` in ESCs and `r formatC(ncol(expr.npc_rna),big.mark = ",")` in NPCs, with `r formatC(length(shared.genes),big.mark = ",")` genes detected in both cell types.
+The filtered data was then normalized to the upper quartile value (each read count is divided by the 75th percentile of the read counts across samples) to allow for comparison of expression measures within and across cell-types.
+Both data-sets were generated in batches, and we used ComBat as implemented in the R package sva to correct for batch effects while controlling for the sexes of lines in each batch.
+Both ESC and NPC expression values were transformed to rank normal scores prior to eQTL mapping.
+
+In this first notebook, I focus on the NPC transcriptome investigating the variation in gene expression in DO mNPCs using a variety of methods including: principal component analysis (PCA), and gene set variation analysis (GSVA).
+Then, I looked at the co-variation across DO mNPCs and mESCs by looking at the agreement between transcriptomes within genetically identical samples and between genes across cell states.
+Further, there are genes uniquely expressed in each cell state which I functionally characterized using overrepresentation analysis (ORA).
+I used Wilcoxon rank sum test to identify differentially expressed genes in mNPCs in contrast to mESCs and functionally characterized up and down regulated genes using ORA.
 
 # Variation in the DO NPC transcriptome
 
+There are `r formatC(ncol(expr.npc_rna), big.mark = ",")` many genes measured across `r nrow(expr.npc_rna)` samples.
+
+```{r npc_stats}
+#| warning: false
+#| message: false
+
+# npc_rna gene stats
+var.npc_rna <- expr.npc_rna %>%
+  as_tibble(.) %>%
+  summarise_all(list(~ var(., na.rm = T))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(ensembl_gene_id = rowname, var = V1) %>%
+  arrange(desc(var))
+
+n.npc_rna <- expr.npc_rna %>%
+  as_tibble(.) %>%
+  summarise_all(list(~ sum(!is.na(.)))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(ensembl_gene_id = rowname, n = V1) %>%
+  arrange(desc(n))
+
+mean.npc_rna <- expr.npc_rna %>%
+  as_tibble(.) %>%
+  summarise_all(list(~ mean(., na.rm = T))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(ensembl_gene_id = rowname, mean = V1) %>%
+  arrange(desc(mean))
+
+var.npc_rna <- inner_join(var.npc_rna, mean.npc_rna) %>%
+  inner_join(., n.npc_rna) %>%
+  left_join(., select(all.genes, ensembl_gene_id, mgi_symbol, gene_chr)) %>%
+  mutate(sd = sqrt(var)) %>%
+  mutate(cv.npc_rna = 100 * sd / (mean)) %>%
+  rename(mean.npc_rna = mean, sd.npc_rna = sd, n.npc_rna=n, var.npc_rna=var)
+
+# npc stats per sample
+var_npc_per_sample <- expr.npc_rna %>% 
+  t() %>% 
+  as_tibble( rownames = "ensembl_gene_id") %>%
+  summarise( across( where(is.numeric),  var , na.rm=T )) %>% 
+  pivot_longer( 1:ncol(.), names_to = "sampleid", values_to ="var_sample") %>% 
+  left_join( select(covarTidy.npc_rna, sampleid, sex))
+  
+
+mean_npc_per_sample <- expr.npc_rna %>%
+  t() %>% 
+  as_tibble( rownames = "ensembl_gene_id") %>%
+  summarise( across( where(is.numeric),  mean , na.rm=T )) %>% 
+  pivot_longer( 1:ncol(.), names_to = "sampleid", values_to ="mean_sample") %>% 
+  left_join( select(covarTidy.npc_rna, sampleid, sex))
+
+```
+
+::: {#NPC_var .panel-tabset .nav-pills}
+
+## Overview
+
+Below are the distributions of mean and variation of transcripts in DO mNPC lines.
+
+```{r npc_stat_plots_gene}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 4
+
+
+# add mean + variance + CV plots per gene
+var.npc_rna %>%
+  ggplot() +
+  aes(x = mean.npc_rna) +
+  geom_histogram(bins = 200) +
+  xlab("Mean") +
+  theme_pubclean(base_size = 14)+
+  scale_x_log10() -> p.mean.hist
+
+var.npc_rna %>%
+  ggplot() +
+  aes(x = var.npc_rna) +
+  geom_histogram(bins = 200 ) +
+  xlab("Variance") +
+  theme_pubclean(base_size = 14)+
+  scale_x_log10()  -> p.var.hist
+
+var.npc_rna %>%
+  ggplot() +
+  aes(x = cv.npc_rna) +
+  geom_histogram(bins = 200 ) +
+  xlab("% Coefficient of variation") +
+  theme_pubclean(base_size = 14)+
+  scale_x_log10()  -> p.cv.hist
+
+ggscatter(var.npc_rna,
+  x = "mean.npc_rna", y = "var.npc_rna", size = 3, alpha = 0.6,
+  add = "reg.line", # Add regression line
+  conf.int = TRUE, # Add confidence interval
+  add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE,
+  yscale = "log10", xscale = "log10"
+) +
+  stat_cor(method = "pearson", label.x = -1, label.y = 10) + # Add correlation coefficient
+  xlab("Mean") +
+  ylab("Variance") +
+  theme_pubclean(base_size = 14) +
+  rremove("legend") -> p.var.mean
+
+ggarrange( p.mean.hist, p.var.hist, p.var.mean, nrow = 1)
+
+```
+
+Here are the distributions of mean and variation of DO mNPC lines.
+
+```{r npc_stats_plots_sample}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 4
+
+# add mean + variance + CV plots per sample
+var_npc_per_sample %>% 
+  ggplot() +
+  aes(x = var_sample, col = sex, fill =sex) +
+  geom_histogram(bins = 100 ) +
+  xlab("Variance") +
+  theme_pubclean(base_size = 14)+
+  scale_x_log10()+
+  color_palette("npg")+
+  fill_palette("npg") -> p.var_sample.hist
+
+mean_npc_per_sample %>% 
+  ggplot() +
+  aes(x = mean_sample, col = sex, fill =sex) +
+  geom_histogram(bins = 100 ) +
+  xlab("Mean") +
+  theme_pubclean(base_size = 14)+
+  scale_x_log10()+
+  color_palette("npg")+
+  fill_palette("npg") -> p.mean_sample.hist
+
+full_join(var_npc_per_sample, mean_npc_per_sample) %>% 
+  mutate(cv_sample = 100*(sqrt(var_sample))/mean_sample) %>%
+  ggscatter(
+    .,
+  x = "mean_sample", y = "var_sample", size = 3, alpha = 0.6,
+  add = "reg.line", # Add regression line
+  conf.int = TRUE, # Add confidence interval
+  col = "sex",
+  add.params = list(color = "blue", fill = "lightgray"),
+  show.legend.text = FALSE
+  #yscale = "log10", xscale = "log10"
+) +
+  #stat_cor(method = "pearson", label.x = 10, label.y = 21) + # Add correlation coefficient
+  xlab("Mean per sample") +
+  ylab("Variance per sample") +
+  theme_pubclean(base_size = 14) +
+  color_palette("npg")+
+  fill_palette("npg")+
+  facet_wrap(~sex)+
+  theme(
+  strip.background = element_blank(),
+  strip.text.x = element_blank()
+  )-> p.var.mean_sample
+
+ggarrange( p.mean_sample.hist, p.var_sample.hist,  p.var.mean_sample, nrow = 1, widths = c(0.5,0.5,1))
+
+```
+
+## Principal component analysis
+
+```{r npc_pca}
+#| warning: false
+#| message: false
+pca.npc <- prcomp(expr.npc_rna, scale.=T, center=T)
+
+```
+
+Let's look at the first 10 PCs and how they group the data for the NPC transcriptome.
+No separation by sex is observed in the NPC data!
+
+```{r pca_plot_pc1to10}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 16
+pca.npc$x%>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  left_join(covarTidy.npc_rna, by = c("rowname" = "sampleid")) %>%
+  mutate(sex = ifelse(sex == "F", "Female", "Male")) %>%
+  GGally::ggpairs(.,
+    columns = 2:11, progress = FALSE, ggplot2::aes(color = sex),
+    upper = list(continuous = "density", combo = "box_no_facet"),
+    lower = list(continuous = "points", combo = "dot_no_facet")
+  ) + 
+  theme_pubclean(base_size = 14) +
+  color_palette("npg")+
+  fill_palette("npg")+
+  theme(legend.position = "top")
+
+```
+
+```{r npc_scree_plot}
+#| warning: false
+#| message: false
+
+
+# plot showing variance explained
+var_explained <- (pca.npc$sdev^2 / sum(pca.npc$sdev^2))
+tibble(var =  var_explained[1:10]* 100, PC = paste0("PC", seq(1:10))) %>%
+  arrange(desc(var)) %>%
+  mutate(label = factor(PC, levels = PC)) %>%
+  ggplot(aes(x = label, y = var)) +
+  geom_col() +
+  xlab("Principal Component") +
+  ylab("% Variation explained") +
+  theme_pubclean(base_size = 14)+
+  ylim(0,15)
+
+
+```
+
+```{r pc1_2_plot}
+#| warning: false
+#| message: false
+#| fig-height: 4
+#| fig-width: 5
+
+pca.npc$x%>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  left_join(covarTidy.npc_rna, by = c("rowname" = "sampleid")) %>%
+  mutate(sex = ifelse(sex == "F", "Female", "Male")) %>% 
+  ggplot()+
+  aes(
+    x = PC1, 
+    y = PC2, 
+    col = sex
+  )+
+  geom_point(size = 4, alpha = 0.7)+
+  theme_pubclean(base_size = 20)+
+  color_palette("npg")+
+  xlab(paste0("PC1 (",100*round(var_explained[1],2),"%)"))+
+  ylab(paste0("PC2 (",100*round(var_explained[2],2),"%)")) -> pca_plot
+
+pca_plot
+
+```
+
+Are PC1 drivers over-represented in any biological processes or pathways?
+Looking at the highest 5% contributing genes to PC1 with positive and negative loadings.
+
+```{r pc1_ora}
+#| warning: false
+#| message: false
+
+
+pc1_drivers <- pca.npc$rotation[,"PC1", drop = FALSE] %>% 
+  as_tibble( rownames = "ensembl_gene_id") %>% 
+  left_join( npc.genes %>%  
+               select(ensembl_gene_id, mgi_symbol)
+             ) %>% 
+  #filter( abs(PC1) >= quantile(abs(PC1), 0.95))
+  filter( PC1 >= quantile(PC1, 0.975) |
+          PC1 <= quantile(PC1, 0.025)
+  )
+
+g.pc1_top <- gost(
+  query = (pc1_drivers |> filter(PC1 >0))$mgi_symbol,
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg = npc.genes$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+g.pc1_bottom <- gost(
+  query = (pc1_drivers |> filter(PC1 < 0))$mgi_symbol,
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg = npc.genes$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+g.pc1_top$result <- g.pc1_top$result %>% filter(term_size < 660)
+g.pc1_bottom$result <- g.pc1_bottom$result %>% filter(term_size < 660)
+
+```
+
+```{r ora_pc1_results}
+
+g.pc1_top$result |> 
+  mutate( type = "Positive PC1 loading") |> 
+  rbind(
+    g.pc1_bottom$result |> 
+      mutate(type = "Negative PC1 loading")
+  ) |> 
+  select( type, term_name, source, FDR = p_value, term_size, intersection_size, intersection) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+
+
+```
+
+Looking at the genes identified as part of:
+
+-   Spindle checkpoint and related processes
+
+-   Pluripotency regulation and related processes
+
+```{r ora_pc1_genes}
+#| warning: false
+#| message: false
+# any category with spindle, segregation
+spindle_genes <- g.pc1_top$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "(?i)spindle") |
+            str_detect(term_name, "(?i)segregation")|
+            str_detect(term_name, "(?i)chromatid") |
+            str_detect(term_name, "(?i)kinetochore") 
+           #str_detect(term_name, "(?i)checkpoint") 
+            #str_detect(intersection,"Mad2l1")
+          ) %>% 
+  filter( !source %in% c("GO:CC","GO:MF")) %>% 
+  select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes)
+
+# any category with pluripotency, lifr, blastocyst, embryo
+pluri_genes <- g.pc1_top$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "leukemia inhibitory factor") |
+            str_detect(term_name, "blastocyst")) %>% 
+    select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes)
+
+```
+
+```{r pc1_sub_genes_plot}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 4
+
+var.npc_rna %>% 
+  ggscatter(., 
+            x = "mean.npc_rna", 
+            y = "var.npc_rna", 
+            size = 3, 
+            alpha = 0.5,
+            col="gray",
+            yscale = "log10",
+            xscale = "log10",
+            show.legend.text = FALSE
+            ) +
+  xlab("Mean transcript abundance") +
+  ylab("Variance in transcript abundance") +
+  ggtitle("Pluripotency related genes")+
+  theme_pubclean(base_size = 18) + 
+  rremove("legend") +
+  geom_point(
+    data =   filter( var.npc_rna, ensembl_gene_id %in% pluri_genes$ensembl_gene_id) ,
+    col = "blue", alpha = 0.6, size = 3)  -> plot_pluri_genes
+
+
+var.npc_rna %>% 
+  ggscatter(., 
+            x = "mean.npc_rna", 
+            y = "var.npc_rna", 
+            size = 3, 
+            alpha = 0.5,
+            col="gray",
+            yscale = "log10",
+            xscale = "log10",
+            show.legend.text = FALSE
+            ) +
+  xlab("Mean transcript abundance") +
+  ylab("Variance in transcript abundance") +
+  ggtitle("SAC related genes")+
+  theme_pubclean(base_size = 18) + 
+  rremove("legend") +
+  geom_point(
+    data =   filter( var.npc_rna, ensembl_gene_id %in% spindle_genes$ensembl_gene_id) ,
+    col = "blue", alpha = 0.6, size = 3) -> plot_spindle_genes
+
+ggarrange( plot_pluri_genes, plot_spindle_genes, nrow =1 
+        )
+
+```
+
+```{r pluri_genes_pc1_values}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 6
+
+
+pca.npc$rotation %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  left_join(all.genes, by = c("rowname" = "ensembl_gene_id")) %>%
+  filter( mgi_symbol %in% pluri_genes$mgi_symbol) %>% 
+  select(mgi_symbol, PC1) %>% 
+  full_join(pluri_genes) -> pluri_genes_pc1
+
+g<-graph_from_data_frame(pluri_genes_pc1[,c("mgi_symbol","term_name")], directed=FALSE)
+V(g)$lfc <- c((pluri_genes_pc1 %>% 
+  select(mgi_symbol, PC1) %>% 
+  distinct())$PC1, rep(NA, length(unique(pluri_genes_pc1$term_name)))) # last two are the category names
+
+ggraph(g)+
+  geom_edge_link(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-0.025,0.025))+
+  theme_classic()+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="PC1 loadings")
+
+
+```
+
+```{r spindle_genes_pc1_values}
+#| warning: false
+#| message: false
+#| fig-width: 14
+#| fig-height: 12
+
+
+pca.npc$rotation %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  left_join(all.genes, by = c("rowname" = "ensembl_gene_id")) %>%
+  filter( mgi_symbol %in% spindle_genes$mgi_symbol) %>% 
+  select(mgi_symbol, PC1) %>% 
+  full_join(spindle_genes) -> spindle_genes_pc1
+
+g<-graph_from_data_frame(spindle_genes_pc1[,c("mgi_symbol","term_name")], directed=FALSE)
+V(g)$lfc <- c((spindle_genes_pc1 %>% 
+  select(mgi_symbol, PC1) %>% 
+  distinct())$PC1, rep(NA, length(unique(spindle_genes_pc1$term_name)))) # last two are the category names
+
+ggraph(g)+
+  geom_edge_link(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-0.025,0.025))+
+  theme_classic()+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="PC1 loadings")
+
+
+```
+
+Highligthing two ontologies in particular for the poster and perhaps the paper(?):
+
+```{r pc1_ora_higlight}
+#| warning: false
+#| message: false
+#| fig-width: 14
+#| fig-height: 4
+#| 
+highlights <- c("response to leukemia inhibitory factor",
+                "Mitotic Spindle Checkpoint"
+                )
+
+g.pc1_top$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( term_name %in% highlights) %>% 
+  select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes) %>% 
+  left_join(
+    pca.npc$rotation %>%
+      as_tibble( rownames = "ensembl_gene_id")
+  )-> highlight_genes_pc1
+
+g<-graph_from_data_frame(highlight_genes_pc1[,c("mgi_symbol","term_name")], directed=F)
+V(g)$lfc <- c((highlight_genes_pc1 %>% 
+  select(mgi_symbol, PC1) %>% 
+  distinct())$PC1, rep(NA, length(unique(highlight_genes_pc1$term_name)))) # last two are the category names
+
+highlights_network_plot <- ggraph(g,layout = "stress")+
+  geom_edge_link(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-0.025,0.025))+
+  theme_classic()+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="PC1 loadings")
+
+figure_1b <- ggarrange(pca_plot, highlights_network_plot, widths = c(0.6, 1.2))
+figure_1b
+
+# ggsave(figure_1b, filename = here("figures","figure_1b.svg"),
+#                                                 width = 14, height = 4, units = "in", dpi = 300)
+
+```
+
+## Most and least variable genes in NPCs
+
+```{r most_least_var}
+#| warning: false
+#| message: false
+
+high.var.genes <- var.npc_rna %>% 
+  filter( cv.npc_rna >= quantile(cv.npc_rna, 0.95))
+
+low.var.genes <- var.npc_rna %>% 
+  filter( cv.npc_rna <= quantile(cv.npc_rna, 0.05))
+
+var.npc_rna <- var.npc_rna %>%
+  mutate(type = ifelse(ensembl_gene_id %in% high.var.genes$ensembl_gene_id, "high", "none")) %>%
+  mutate(type = ifelse(ensembl_gene_id %in% low.var.genes$ensembl_gene_id, "low", type))
+
+g.high.var <- gost(
+  query = high.var.genes$mgi_symbol,
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg = npc.genes$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+g.high.var$result <- g.high.var$result %>% filter(term_size < 660)
+
+g.low.var <- gost(
+  query = low.var.genes$mgi_symbol,
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg = npc.genes$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+g.low.var$result <- g.low.var$result %>% filter(term_size < 660)
+
+```
+
+ORA results with most variable (highest .05% CV) genes in mNPCs (FDR \<0.01):
+
+```{r ora_most_var}
+
+g.high.var$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+<br>
+
+<br>
+
+ORA results with least variable (lowest .05% CV) genes in mNPCs (FDR \<0.01):
+
+```{r ora_least_var}
+#| warning: false
+#| message: false
+
+spindle_genes_low_var <- g.low.var$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "(?i)spindle") |
+            str_detect(term_name, "(?i)segregation")|
+            str_detect(term_name, "(?i)chromatid") |
+            str_detect(term_name, "(?i)kinetochore") |
+            str_detect(intersection,"Mad2l1")) %>% 
+  select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes)
+
+g.low.var$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+## Sex effects on gene expression
+
+```{r sex_eff}
+#| warning: false
+#| message: false
+#| cache: true
+
+
+# doing an anova first and then tukey's 
+# reporting ones with significance on both as genes with sex effects
+
+# updating the code to use anova followed by tukey's hsd:
+expr.npc_rna %>%
+  t() %>% 
+  as_tibble(rownames = "ensembl_gene_id") %>%
+  pivot_longer( cols = rownames(expr.npc_rna),
+                values_to = "gene_expr",
+                names_to = "sampleid") %>% 
+  left_join(., select(covarTidy.npc_rna, sampleid, sex)) %>% 
+  group_by(ensembl_gene_id) %>% 
+  rstatix::anova_test( gene_expr ~ sex) %>% 
+  rstatix::adjust_pvalue( method = "BH") %>% 
+  rstatix::add_significance("p.adj") %>% 
+  as_tibble() -> npc_rna_sex_aov
+
+# passing the full data to tukey's then filtering
+expr.npc_rna %>%
+  t() %>% 
+  as_tibble(rownames = "ensembl_gene_id") %>% 
+  pivot_longer( cols = rownames(expr.npc_rna),
+                values_to = "gene_expr",
+                names_to = "sampleid") %>% 
+  left_join(., select(covarTidy.npc_rna, sampleid, sex)) %>% 
+  group_by(ensembl_gene_id) %>% 
+  rstatix::tukey_hsd(gene_expr ~ sex) %>% 
+  filter( ensembl_gene_id %in% (filter(npc_rna_sex_aov, p.adj.signif != "ns"))$ensembl_gene_id & # filtering to only include genes with signif aov + tukeys
+            p.adj.signif != "ns") -> npc_rna_sex_tukeys
+
+
+# get the medians for later
+expr.npc_rna %>%
+  t() %>% 
+  as_tibble(rownames = "ensembl_gene_id") %>%
+  pivot_longer( cols = rownames(expr.npc_rna),
+                values_to = "gene_expr",
+                names_to = "sampleid") %>% 
+  left_join(., select(covarTidy.npc_rna, sampleid, sex)) %>% 
+  group_by(ensembl_gene_id,sex) %>% 
+  summarize( med = median(gene_expr, na.rm =T)) %>% 
+  pivot_wider( id_cols = "ensembl_gene_id",
+               names_from = "sex",
+               values_from = "med")-> npc_rna_sex_med
+
+```
+
+```{r sex_effects_table}
+#| warning: false
+#| message: false
+
+npc_rna_sex_tukeys %>%
+  left_join( npc.genes) %>% 
+  left_join( npc_rna_sex_med) %>% 
+  arrange(p.adj) %>%
+  mutate_if( is.numeric, round, 2) %>%
+  select(
+    `Gene ID` = ensembl_gene_id,
+    `MGI Symbol`= mgi_symbol, 
+    `Gene location (chr)` = gene_chr,
+    `Female median`=`F`,
+    `Male median`= M
+   ) %>%
+  create_dt()
+
+```
+
+Overrepresented pathways that show sex effects:
+
+```{r ora_sex_effs}
+
+sex_eff_genes <- npc_rna_sex_tukeys %>%
+  left_join( npc.genes) %>% 
+  filter(p.adj < 0.05) 
+
+npc_sex_ora <- gost(query = sex_eff_genes$mgi_symbol, 
+                 organism = "mmusculus",
+                 significant = TRUE, 
+                 domain_scope = "custom",
+                 custom_bg = npc.genes$mgi_symbol,
+                 correction_method = "fdr",
+                 evcodes = TRUE)
+npc_sex_ora$result <- npc_sex_ora$result %>% filter(term_size <500)
+
+```
+
+```{r sac_related_genes_table}
+
+# any category with spindle, segregation
+spindle_genes_sex_eff <- npc_sex_ora$result %>% 
+  filter( p_value <0.01) %>% 
+  filter( str_detect( term_name, "(?i)spindle") |
+            str_detect(term_name, "(?i)segregation")|
+            str_detect(term_name, "(?i)chromatid") |
+            str_detect(term_name, "(?i)kinetochore") |
+            str_detect(intersection,"Mad2l1")) %>% 
+  select(term_name, mgi_symbol= intersection) %>%
+  separate_rows(mgi_symbol, sep = ",") %>% 
+  left_join(npc.genes)
+
+npc_sex_ora$result %>% 
+    select( term_name, source, FDR = p_value, term_size, intersection_size,intersection) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+## Gene set variation analysis
+
+```{r npc_rna_gsva}
+#| warning: false
+#| message: false
+#| results: hide
+#| cache: true
+# reading in the GO + mgi downloaded from: http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt
+go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt") %>% 
+  mutate( genes = str_split(genes, ",")) %>% 
+  unnest() # separete the symbols, note the overlap: length(intersect(unique(go_terms$genes), npc.genes$mgi_symbol) ) = 11806
+
+
+slim_go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/map2MGIslim.txt") %>% 
+  select(-term) %>% 
+  mutate( ONT = case_when( aspect == "P" ~  "BP",
+                     aspect == "F" ~ "MF",
+                     aspect == "C" ~ "CC"
+                     )
+          ) %>% 
+  select(-aspect)
+
+genesbygo <- split(go_terms$genes, go_terms$GO_id)
+
+go_terms_annot <- go_terms %>%  
+  select(GO_id) %>% 
+  distinct() %>% 
+  left_join( slim_go_terms %>%  select( GO_id, ONT) %>% distinct())
+
+goannot_wdef <- AnnotationDbi::select(GO.db, keys= unique(go_terms$GO_id), columns=c("GOID","DEFINITION","ONTOLOGY","TERM")) %>%
+  left_join( slim_go_terms, by=c("GOID"="GO_id")) %>% 
+  mutate( ONTOLOGY = ONT) %>% 
+  select(-ONT)
+
+go_bp <- goannot_wdef %>% filter( ONTOLOGY == "BP") %>% 
+  select(GOID) %>%  distinct()
+
+# expr - change gene id's to symbols for GSVA with GO
+expr.npc_rna_upd <- expr.npc_rna[, npc.genes$ensembl_gene_id]
+colnames(expr.npc_rna_upd) <- npc.genes$mgi_symbol
+
+
+# I can't seem to run GSVA anymore! Keep erroring out. 
+# I was able to run it separately in a stand alone R session.
+# loading the results here instead of running.
+# load(here("_data","Results_from_GSVA_2022-09-23.RData"))
+gsva_rna <- gsva(  expr = t(expr.npc_rna_upd),
+                   gset.idx.list = genesbygo,
+                    method ="gsva",
+                    kcdf = "none",
+                    min.sz = 5,
+                    max.sz = 1000
+                   )
+
+
+# following up on rna results
+gsva_rna %>% 
+  as_tibble(rownames = "Category") %>% 
+  filter( Category %in% go_bp$GOID) %>% #filtering for BP
+  pivot_longer( cols = rownames(expr.npc_rna_upd),
+                values_to = "Enrichment_Score",
+                names_to = "sampleid") %>% 
+  # add sexes + lifr genotypes
+  left_join( covarTidy.npc_rna) -> gsva_rna_results
+
+gsva_rna_results %>% 
+  group_by( Category) %>% 
+  rstatix::anova_test( Enrichment_Score ~ sex+lifr_geno) %>% 
+  rstatix::adjust_pvalue( method = "BH") %>%
+  rstatix::add_significance("p.adj") %>% 
+  ungroup() -> gsva_rna_aov
+
+gsva_rna_results %>% 
+  group_by(Category) %>% 
+  rstatix::tukey_hsd( Enrichment_Score ~ sex+lifr_geno) %>% 
+  ungroup() %>% 
+  as_tibble() %>% 
+  left_join( goannot_wdef, by = c("Category" = "GOID")) -> gsva_rna_tukey
+
+gsva_rna_aov %>% 
+  as_tibble() %>% 
+  filter( p.adj.signif != "ns" ) -> signif_eff_terms_rna
+
+gsva_rna_tukey %>% 
+  inner_join( ., select( signif_eff_terms_rna, Category, term = Effect)) -> signif_results_tukey_rna
+
+```
+
+Below are the list of GO Biological processes that show significant differences by sex or genotype at the *Lifr* locus, or their interaction (adjusted p-value \< 0.01).
+
+```{r gsva_results_table}
+#| warning: false
+#| message: false
+
+gsva_rna_tukey %>%
+  filter( Category %in% (signif_results_tukey_rna %>% filter( p.adj <= 0.01 , term %in% c("sex")))$Category ) %>%
+  filter( term == "sex") %>% 
+  rbind(
+    gsva_rna_tukey %>%
+      filter( Category %in% (signif_results_tukey_rna %>% filter( p.adj <= 0.01 , term %in% c("lifr_geno")))$Category ) %>%
+      filter( term == "lifr_geno") 
+  ) %>% 
+  select(Effect= term, Category, TERM,group1, group2, estimate,p.adj) %>% 
+  #filter( p.adj < 0.01) %>% 
+  distinct() %>% 
+ mutate( "Adjusted p-value" = formatC(p.adj, digits=2, format ="e"),
+          estimate= round(estimate,2)) %>% 
+  select(-p.adj) %>% 
+  arrange(estimate) %>% 
+  create_dt()
+
+```
+
+### QTL mapping with GSVA scores {.tabset .tabset-fade .tabset-pills}
+
+```{r gsva_qtl_scans}
+#| warning: false
+#| message: false
+
+gsva_rna_results %>%
+  # filter( Category %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
+  #                                                         p.adj.signif != "ns" ))$Category ) %>%
+  select(Category, sampleid, Enrichment_Score) %>%
+  pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>%
+  column_to_rownames("sampleid") %>%
+  as.matrix() -> gsva_results_signif_mat
+
+# rankZ
+gsva_results_signif_mat_rankZ <- apply(gsva_results_signif_mat, 2,rankZ )
+
+# qtl mapping
+# gsva_qtl <- scan1( genoprobs = probs.npc_rna,
+#                    pheno = gsva_results_signif_mat_rankZ,
+#                    kinship = kinship_loco.npc_rna,
+#                    addcovar = covar.npc_rna)
+# save( gsva_qtl, file = here("_data","GSVA_npc_qtl_scans.RData"))
+
+load(here("_data","GSVA_npc_qtl_scans.RData"))
+gsva_qtl_peaks <- find_peaks( gsva_qtl, threshold = 10, gmap)
+# add interp_peak_bp, before, after
+gsva_qtl_peaks <- gsva_qtl_peaks %>% 
+  left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% 
+  mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>% 
+  mutate(phenotype=lodcolumn) %>%
+  mutate( peak_chr = chr,
+          peak_cM = pos) %>%
+  interp_bp(.) #add bp location for peaks
+
+```
+
+```{r}
+
+gsva_qtl_peaks %>% 
+  select( GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
+  # filter( GOID %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
+  #                                                          p.adj.signif != "ns" ))$Category ) %>%
+  filter(Lod > 7.5) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  create_dt()
+
+```
+
+Looking closer at some of them:
+
+```{r closer_look_at_gsva_results}
+
+# GO:0001825 blastocyst formation	
+# within chr1 transband: chr 1 104-113Mb 
+# mRNA processing, cell cycle, mitotic chromosome condensation, regulation of double-strand break repair via homologous recombination, anaphase-promoting complex-dependent catabolic process, protein localization to kinetochore, positive regulation of DNA repair, cell division, DNA repair, chromosome condensation
+# within chr10 transband: chr10 33-40Mb
+# proteolysis, dephosphorylation, endoplasmic reticulum calcium ion homeostasis, neuron development,  
+# within chr11 transband: chr11 107-111Mb
+# negative regulation of protein processing
+
+gsva_qtl_highlight <- gsva_qtl_peaks %>% 
+  filter(
+    (chr == 1 & between(interp_bp_peak, 104e06, 113e06)) |
+    (chr == 10 & between(interp_bp_peak, 33e06, 40e06) ) |
+    (chr == 11 & between(interp_bp_peak, 107e06, 111e06) )
+  ) %>% 
+  filter(lod > 7)
+  # filter(
+  #   TERM %in% c("mRNA processing", "cell cycle", "mitotic chromosome condensation", "regulation of double-strand break repair via homologous recombination", "anaphase-promoting complex-dependent catabolic process", "protein localization to kinetochore", "positive regulation of DNA repair", "cell division", "DNA repair", "chromosome condensation",
+  #            "proteolysis", "dephosphorylation", "endoplasmic reticulum calcium ion homeostasis", "neuron development",
+  #            "negative regulation of protein processing"
+  #            ) 
+  #     
+  # )
+
+```
+
+::: {#GSVA_qtls .panel-tabset .nav-pills}
+
+```{r gsva_qtl_follow_up_plots}
+#| results: asis
+#| echo: false
+#| eval: true
+#| cache: true
+#| message: false
+#| fig-height: 6
+#| fig-width: 12
+
+haps <- LETTERS[1:8]
+
+for( i in 1:nrow(gsva_qtl_highlight)){
+  peak_chr <- gsva_qtl_highlight$peak_chr[i]
+  lodcolumn <- gsva_qtl_highlight$lodcolumn[i]
+  
+  #pQTL scan
+  qtl_scan <- scan1(genoprobs = probs.npc_rna,
+                 pheno = gsva_results_signif_mat_rankZ[,lodcolumn,drop = F],
+                 kinship = kinship_loco.npc_rna,
+                 addcovar = covar.npc_rna)
+  qtl_effs <- scan1blup(genoprobs =probs.npc_rna[,peak_chr],
+                   pheno = gsva_results_signif_mat_rankZ[,lodcolumn,drop = F],
+                   kinship = kinship_loco.npc_rna[[peak_chr]],
+                   addcovar = covar.npc_rna)
+  cat('### ',gsub(":","",gsva_qtl_highlight$TERM[i]),'peak on', peak_chr ,' \n')
+  plot_coefCC(qtl_effs,
+                            pmap, 
+                            scan1_output = qtl_scan, 
+                            main=paste0(gsva_qtl_highlight$TERM[i]," plot"),
+              xlim = c(gsva_qtl_highlight$interp_bp_peak[i]-20e06, 
+                       gsva_qtl_highlight$interp_bp_peak[i]+20e06) )
+  abline(v=gsva_qtl_highlight$interp_bp_peak[i],col="red",lwd=2,lty=3)
+  cat(' \n \n')
+}
+
+
+
+```
+
+:::
+
+:::
+
 # Covariation in the DO ESC and NPC transcript abundance
+
+::: {#NPC_covar .panel-tabset .nav-pills}
+## Overlap between transcriptomes
+
+```{r overlap_plot}
+#| warning: false
+#| message: false
+#| fig-width: 6
+#| fig-height: 4
+
+sample.overlap <- euler(c( "ESC" = nrow(covarTidy.esc_rna)-length(shared.samples), 
+                           "NPC"=nrow(covarTidy.npc_rna)-length(shared.samples), 
+                           "ESC&NPC"=length(shared.samples)) ,shape="ellipse")
+
+gene.overlap <-  euler(c( "ESC" = nrow(esc.genes)-length(shared.genes), 
+                           "NPC"= nrow(npc.genes)-length(shared.genes), 
+                           "ESC&NPC"=length(shared.genes)) ,shape="ellipse")
+
+p1 <- plot(sample.overlap,quantities = TRUE, main='Sample overlap',
+           col=c(qtl.colors[["esc_rna"]],qtl.colors[["npc_rna"]],qtl.colors[["shared"]]), 
+           fill=c(qtl.colors[["esc_rna"]],qtl.colors[["npc_rna"]],qtl.colors[["shared"]]),
+           alpha=0.6)
+p2 <- plot(gene.overlap,quantities = TRUE, main="Gene overlap",
+           col=c(qtl.colors[["esc_rna"]],qtl.colors[["npc_rna"]],qtl.colors[["shared"]]), 
+           fill=c(qtl.colors[["esc_rna"]],qtl.colors[["npc_rna"]],qtl.colors[["shared"]]),
+           alpha=0.6)
+ggarrange(p1,NULL,p2,nrow = 1, ncol=3 , widths = c(1, 0.1,0.9))  
+
+```
+
+```{r esc_rna_gene_stats}
+#| warning: false
+#| message: false
+
+# esc_rna gene stats
+var.esc_rna <- expr.esc_rna %>%
+  as_tibble(.) %>%
+  summarise_all(list(~ var(., na.rm = T))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(ensembl_gene_id = rowname, var = V1) %>%
+  arrange(desc(var))
+
+n.esc_rna <- expr.esc_rna %>%
+  as_tibble(.) %>%
+  summarise_all(list(~ sum(!is.na(.)))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(ensembl_gene_id = rowname, n = V1) %>%
+  arrange(desc(n))
+
+mean.esc_rna <- expr.esc_rna %>%
+  as_tibble(.) %>%
+  summarise_all(list(~ mean(., na.rm = T))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(ensembl_gene_id = rowname, mean = V1) %>%
+  arrange(desc(mean))
+
+var.esc_rna <- inner_join(var.esc_rna, mean.esc_rna) %>%
+  inner_join(., n.esc_rna) %>%
+  left_join(., select(all.genes, ensembl_gene_id, mgi_symbol, gene_chr)) %>%
+  mutate(sd = sqrt(var)) %>%
+  mutate(cv.esc_rna = 100 * sd / (mean)) %>%
+  rename(mean.esc_rna = mean, sd.esc_rna = sd, n.esc_rna=n, var.esc_rna=var)
+
+```
+
+```{r stat_plots_esc_npc}
+#| warning: false
+#| message: false
+#| fig-width: 9
+#| fig-height: 4
+
+# mean esc vs npc
+var.esc_rna %>% 
+  inner_join( var.npc_rna) %>% 
+  ggplot()+
+  aes( x = mean.esc_rna, 
+       y = mean.npc_rna  )+
+  geom_point()+
+  geom_smooth( method= "lm")+
+  stat_cor()+
+  theme_pubclean(base_size = 14)+
+  scale_x_log10()+
+  scale_y_log10()+
+  xlab("Mean transcript abundance in ESCs")+
+  ylab("Mean transcript abundance in NPCs") -> p.mean
+
+# variance esc vs npc
+var.esc_rna %>% 
+  inner_join( var.npc_rna) %>% 
+  ggplot()+
+  aes( x = var.esc_rna, 
+       y = var.npc_rna  )+
+  geom_point()+
+  geom_smooth( method= "lm")+
+  stat_cor()+
+  theme_pubclean(base_size = 14)+
+  scale_x_log10()+
+  scale_y_log10()+
+  xlab("Variance in transcript abundance in ESCs")+
+  ylab("Variance transcript abundance in NPCs") -> p.var
+
+
+# CV esc vs npc
+var.esc_rna %>% 
+  inner_join( var.npc_rna) %>% 
+  ggplot()+
+  aes( x = cv.esc_rna, 
+       y = cv.npc_rna  )+
+  geom_point()+
+  geom_smooth( method= "lm")+
+  stat_cor()+
+  theme_pubclean(base_size = 14)+
+  scale_x_log10()+
+  scale_y_log10()+
+  xlab("%CV in transcript abundance in ESCs")+
+  ylab("%CV transcript abundance in NPCs") -> p.cv
+
+ggarrange(p.mean, p.cv,  nrow = 1)
+
+```
+
+Comparing the variance distribution in ESC (n = 184) and NPC (n = 186) samples.
+
+```{r esc_npc_var_dist}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 4
+
+var.esc_rna %>% 
+  full_join( var.npc_rna |> select(-type)) %>% 
+  pivot_longer( cols = c("var.esc_rna","var.npc_rna","sd.esc_rna","sd.npc_rna","n.esc_rna","n.npc_rna","mean.esc_rna","mean.npc_rna", "cv.esc_rna","cv.npc_rna"),names_to = c("parameter","type"),names_sep = "[.]", values_to ="value" ) %>% 
+  filter(parameter == "var") %>% 
+  ggplot() +
+  aes(x = type,
+      y = value,
+      col = type) +
+  geom_violin()+
+  geom_boxplot( width = 0.2)+
+  xlab("Variance") +
+  theme_pubclean(base_size = 14)+
+  scale_y_log10()+
+  scale_color_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]]))+
+  scale_fill_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]])) -> var_plot
+
+var.esc_rna %>% 
+full_join( var.npc_rna |> select(-type)) %>% 
+  pivot_longer( cols = c("var.esc_rna","var.npc_rna","sd.esc_rna","sd.npc_rna","n.esc_rna","n.npc_rna","mean.esc_rna","mean.npc_rna", "cv.esc_rna","cv.npc_rna"),names_to = c("parameter","type"),names_sep = "[.]", values_to ="value" ) %>% 
+  filter(parameter == "cv") %>% 
+  ggplot() +
+  aes(x = type,
+      y = value,
+      col = type) +
+  geom_violin()+
+  geom_boxplot( width = 0.2)+
+  xlab("%CV") +
+  theme_pubclean(base_size = 14)+
+  scale_y_log10()+
+  scale_color_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]]))+
+  scale_fill_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]])) -> cv_plot
+
+var.esc_rna %>% 
+full_join( var.npc_rna |> select(-type)) %>% 
+  pivot_longer( cols = c("var.esc_rna","var.npc_rna","sd.esc_rna","sd.npc_rna","n.esc_rna","n.npc_rna","mean.esc_rna","mean.npc_rna", "cv.esc_rna","cv.npc_rna"),names_to = c("parameter","type"),names_sep = "[.]", values_to ="value" ) %>% 
+  filter(parameter == "sd") %>% 
+  ggplot() +
+  aes(x = type,
+      y = value,
+      col = type) +
+  geom_violin()+
+  geom_boxplot( width = 0.2)+
+  xlab("SD") +
+  theme_pubclean(base_size = 14)+
+  scale_y_log10()+
+  scale_color_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]]))+
+  scale_fill_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]])) -> sd_plot
+
+ggarrange(var_plot, sd_plot, cv_plot, nrow = 1, common.legend = T)
+
+```
+
+## Correlation analysis
+
+### Between transcriptomes
+
+```{r sample_corr}
+#| warning: false
+#| message: false
+#| cache: true
+
+shared.expr.esc_rna1 <- t(exprZ.esc_rna[shared.samples, shared.genes])
+shared.expr.npc_rna1 <- t(exprZ.npc_rna[shared.samples, shared.genes])
+colnames(shared.expr.esc_rna1) <- paste0(shared.samples,".esc_rna")
+colnames(shared.expr.npc_rna1) <- paste0(shared.samples,".npc_rna")
+rankZ_cor_sp <- rcorr(shared.expr.esc_rna1,
+                    shared.expr.npc_rna1,
+                    type = "spearman")
+
+shared.expr.esc_rna2 <- t(expr.esc_rna[shared.samples, shared.genes])
+shared.expr.npc_rna2 <- t(expr.npc_rna[shared.samples, shared.genes])
+colnames(shared.expr.esc_rna2) <- paste0(shared.samples,".esc_rna")
+colnames(shared.expr.npc_rna2) <- paste0(shared.samples,".npc_rna")
+expr_cor_sp <- rcorr(shared.expr.esc_rna2,
+                    shared.expr.npc_rna2,
+                    type = "pearson")
+
+sample_cor_df <- as_tibble( rankZ_cor_sp$r[colnames(shared.expr.esc_rna1), colnames(shared.expr.npc_rna1)],
+                            rownames = "esc") %>%
+  pivot_longer( colnames(shared.expr.npc_rna1), names_to = "npc", values_to = "cor_rankz") %>%
+  inner_join( (as_tibble( rankZ_cor_sp$P[colnames(shared.expr.esc_rna1), colnames(shared.expr.npc_rna1)],
+                            rownames = "esc") %>%
+      pivot_longer( colnames(shared.expr.npc_rna1), names_to = "npc", values_to = "p_val_rankz") ) ) %>% 
+  inner_join(
+    as_tibble(
+      expr_cor_sp$r[colnames(shared.expr.esc_rna2), colnames(shared.expr.npc_rna2)],
+                            rownames = "esc") %>% 
+        pivot_longer( colnames(shared.expr.npc_rna2), names_to = "npc", values_to = "cor_expr")
+    ) %>% 
+    inner_join( (as_tibble( expr_cor_sp$P[colnames(shared.expr.esc_rna2), colnames(shared.expr.npc_rna2)],
+                            rownames = "esc") %>%
+      pivot_longer( colnames(shared.expr.npc_rna2), names_to = "npc", values_to = "p_val_expr") ) ) 
+  
+
+```
+
+```{r null_dist_sample_corr}
+#| eval: false
+sample_cor <- c()
+for( i in 1:1000){
+  # randomizing the sample names 1000 times and getting correlations
+
+  shared_npc_rna_mat <-  t(exprZ.npc_rna[shared.samples, shared.genes])
+  # randomize the sample names
+  colnames(shared_npc_rna_mat) <- paste0( sample(colnames(shared_npc_rna_mat), ncol(shared_npc_rna_mat)),"_npc")
+
+  shared_esc_rna_mat <-  t(exprZ.esc_rna[shared.samples, shared.genes])
+  # randomize the sample names
+  colnames(shared_esc_rna_mat) <- paste0( sample(colnames(shared_esc_rna_mat), ncol(shared_esc_rna_mat)),"_esc")
+
+  measure.cor.df <- rcorr( x = shared_npc_rna_mat,
+                         y = shared_esc_rna_mat,
+                         type = "pearson")
+
+  sample_cor[[i]] <- as_tibble( measure.cor.df$r[colnames(shared_npc_rna_mat), colnames(shared_esc_rna_mat)],
+                            rownames = "npc_sample") %>%
+  pivot_longer( colnames(shared_esc_rna_mat), names_to = "esc_sample", values_to = "r") %>%
+  inner_join( (as_tibble( measure.cor.df$P[colnames(shared_npc_rna_mat), colnames(shared_esc_rna_mat)],
+                            rownames = "npc_sample") %>%
+      pivot_longer( colnames(shared_esc_rna_mat), names_to = "esc_sample", values_to = "p_val") ) ) %>%
+    mutate( n = i)
+
+}
+
+save(sample_cor, file = here("_data","npc_esc_rna_sample_cor_perm_pearson.RData"))
+```
+
+```{r plot_null_dist}
+#| warning: false
+#| message: false
+#| fig-width: 5
+#| fig-height: 6
+
+load(here("_data","npc_esc_rna_sample_cor_perm_pearson.RData"))
+
+sample_cor %>% 
+  enframe() %>% 
+  unnest(value) %>% 
+  mutate( npc_sample = gsub("_npc","",npc_sample) ,
+          esc_sample = gsub("_esc","",esc_sample)) %>% 
+  filter( npc_sample == esc_sample) -> null_sample_cor_dist
+
+sample_cor_df %>%
+  mutate( sampleid_esc = gsub(".esc_rna","",esc),
+          sampleid_npc = gsub(".npc_rna","", npc)) %>%
+  filter( sampleid_esc == sampleid_npc) %>% 
+  mutate( sampleid = sampleid_npc,
+           r= cor_expr)  -> real_sample_cor_dist
+
+null_sample_cor_dist %>% 
+  mutate( type = "Null") %>% 
+  select( type, r) %>% 
+  rbind( real_sample_cor_dist %>% 
+           mutate( type = "Real") %>% 
+           select( type, r)) %>% 
+  ggplot()+
+  aes( x = type,
+       y = r, 
+       col = type )+
+  geom_violin( show.legend = F)+
+  geom_boxplot(width = 0.1, show.legend = F)+
+  scale_color_manual( values = c("black","blue"))+
+  theme_pubclean(base_size = 18)+
+  theme(legend.position="none")+
+  ylab("Correlation")+
+  xlab("Distribution")+
+  stat_compare_means( label.y = 1, label.x = 1.15)+
+  ylim(-1,1) -> null_dist_plot
+
+```
+
+Pearson correlation between ESC and NPC transcriptomes using upper quartile normalized, batch corrected transcript abundance values.
+
+```{r sample_cor_hist}
+#| warning: false
+#| message: false
+
+sample_cor_df %>% 
+  mutate( sampleid_esc = gsub(".esc_rna","",esc),
+          sampleid_npc = gsub(".npc_rna","", npc)) %>%
+  filter( sampleid_esc == sampleid_npc) %>% 
+  mutate( sampleid = sampleid_npc) %>% 
+  #left_join(covarTidy.npc_rna %>%  select(sampleid, sex)) %>% 
+  ggplot()+
+  aes( x = cor_expr)+
+  #geom_point()
+  geom_histogram(binwidth = 0.01, alpha = 0.8)+
+  geom_vline( aes( xintercept = median(cor_expr)), linetype = "dashed",
+              linewidth = 1.5)+
+  geom_text( aes( label = paste0("median =\n",round(median(cor_expr),2)),
+                  x = median(cor_expr)-0.2, y = 7), size = 6
+             )+
+  theme_pubclean(base_size = 18)+
+  color_palette("npg")+
+  fill_palette("npg")+
+  xlim(0,1)+
+  xlab("Correlation")+
+  ylab("") -> sample_hist
+
+
+```
+
+```{r sample_corr_plot}
+#| warning: false
+#| message: false
+#| fig-width: 9
+#| fig-height: 5
+
+
+ggarrange(sample_hist, null_dist_plot, widths = c(1, 0.5))
+
+```
+
+<br/>
+
+<br/>
+
+### Between genes
+
+```{r gene_cor}
+#| eval: false
+shared.expr.esc_rna3 <- shared.expr.esc_rna
+colnames(shared.expr.esc_rna3) <- paste0(colnames(shared.expr.esc_rna3),"_esc")
+shared.expr.npc_rna3 <- shared.expr.npc_rna
+colnames(shared.expr.npc_rna3) <- paste0(colnames(shared.expr.npc_rna3),"_npc")
+
+gene.cor <- rcorr(shared.expr.npc_rna3, shared.expr.esc_rna3, type="pearson")
+
+gene_cor_df <- tibble( cor =diag(gene.cor$r[colnames(shared.expr.npc_rna3), colnames(shared.expr.esc_rna3)]),
+                       p_val = diag(gene.cor$P[colnames(shared.expr.npc_rna3), colnames(shared.expr.esc_rna3)]),
+                       n = diag(gene.cor$n[colnames(shared.expr.npc_rna3), colnames(shared.expr.esc_rna3)]),
+                       ensembl_gene_id = gsub("_npc","",colnames(shared.expr.npc_rna3))
+                       ) %>%
+  left_join(., all.genes) %>%
+  mutate(p_adj = p.adjust(p_val, method = "BH"))
+
+save(gene_cor_df, file = here("_data","gene_cor_df.RData"))
+
+```
+
+Histogram of correlations for all genes between ESC and NPC lines.
+
+```{r gene_cor_plot}
+#| warning: false
+#| message: false
+#| fig-width: 6
+#| fig-height: 4
+
+
+load(here("_data","gene_cor_df.RData"))
+
+gene_cor_df %>% 
+  mutate(p_val_rank = ifelse(p_adj < 0.05, "p < 0.05", "ns") ) %>%
+  ggplot() +
+  aes(x = cor) +
+  geom_histogram(aes(fill = p_val_rank), show.legend = T, bins = 300, alpha = 0.6) +
+  xlab("Correlation") +
+  ylab("")+
+  scale_fill_viridis_d(direction = -1, limits = c("ns", "p < 0.05")) +
+  labs(fill = "Significance") +
+  #ggtitle("Transcript vs Protein abundance for genes") +
+  xlim(-0.5,1)+
+  theme_pubclean(base_size = 18)+
+  theme( legend.text = element_text(size = 14),
+         legend.title = element_text(size = 16))
+
+```
+
+Table with annotated correlations.
+
+```{r gene_cor_table}
+#| warning: false
+#| message: false
+
+gene_cor_df %>%
+  mutate(p_val_rank = ifelse(p_adj < 5e-10, "p < 5e-10", ifelse(p_adj < 0.005, "p < 0.005", ifelse(p_adj < 0.05, "p < 0.05", "ns")))) %>%
+  select(mgi_symbol, ensembl_gene_id, gene_chr, gene_start, gene_end, cor, p_adj, p_val_rank) %>%
+  mutate(p_adj = formatC(p_adj, digits = 2, format = "e"), cor = formatC(cor, digits = 2, format = "g")) %>%
+  create_dt()
+
+```
+
+Overrpresentation results for genes with significant negative and positive correlation and genes with no correlation.
+
+```{r gene_cor_ora}
+#| warning: false
+#| message: false
+
+neg_cor <- gene_cor_df %>%
+  filter( cor < 0, p_adj < 0.05)
+
+pos_cor <- gene_cor_df %>%
+  filter( cor > 0, p_adj < 0.05) %>%
+  arrange( desc(cor) )
+
+no_cor <- gene_cor_df %>%
+  filter( abs(cor) < 0.05) 
+
+ora_neg_cor <- gost( query = neg_cor$mgi_symbol,
+                     organism = "mmusculus",
+                     domain_scope = "custom",
+                     custom_bg = gene_cor_df$mgi_symbol,
+                     evcodes = TRUE,
+  correction_method = "fdr"
+                     )
+ora_neg_cor$result <- filter( ora_neg_cor$result, term_size < 600)
+ora_pos_cor <- gost( query = pos_cor$mgi_symbol,
+                     organism = "mmusculus",
+                     domain_scope = "custom",
+                     custom_bg = gene_cor_df$mgi_symbol,
+                     evcodes = TRUE,
+  correction_method = "fdr"
+                     )
+ora_pos_cor$result <- filter( ora_pos_cor$result, term_size < 600)
+
+ora_no_cor <- gost( query = no_cor$mgi_symbol,
+                     organism = "mmusculus",
+                     domain_scope = "custom",
+                     custom_bg = gene_cor_df$mgi_symbol,
+                     evcodes = TRUE,
+  correction_method = "fdr"
+                     )
+ora_no_cor$result <- filter( ora_no_cor$result, term_size < 600)
+
+ora_neg_cor$result %>%
+  mutate( group = "Negative correlation") %>%
+  rbind( mutate( ora_pos_cor$result, group = "Positive correlation")) %>%
+  rbind( mutate( ora_no_cor$result , group = "No correlation")) -> ora_all_corr
+
+ora_all_corr %>%
+  select(group,source, term_name, intersection_size, term_size , FDR = p_value) %>%
+  #mutate( p_value = p.adjust(p_value, method = "BH") ) %>% # already corrected
+  filter( FDR < 0.05) %>%
+  mutate_if(is.numeric, formatC, digits =2, format ="fg") %>%
+  create_dt()
+
+```
+
+## Uniquely expressed genes
+
+### NPC specific genes
+
+Here are the overrepresentation results using genes only expressed in NPC lines using all of the genes identified in ESC and NPC lines as the custom background.
+
+```{r npc_specific_genes_ora}
+#| warning: false
+#| message: false
+#| cache: true
+
+
+# get npc specific genes
+all.genes %>% 
+  filter( ensembl_gene_id %in% npc.genes$ensembl_gene_id & !ensembl_gene_id %in% esc.genes$ensembl_gene_id) -> npc.specific.genes
+
+npc_specific_ora <- gost(query = npc.specific.genes$mgi_symbol, 
+                 organism = "mmusculus",
+                 significant = TRUE, 
+                 domain_scope = "custom",
+                 custom_bg = all.genes$mgi_symbol,
+                 correction_method = "fdr",
+                 evcodes = TRUE)
+npc_specific_ora$result <- npc_specific_ora$result %>% filter(term_size <500)
+
+
+```
+
+```{r npc_specific_ora_plot}
+#| warning: false
+#| message: false
+
+gostplot(npc_specific_ora)
+
+```
+
+```{r npc_specific_ora_table}
+#| warning: false
+#| message: false
+
+npc_specific_ora$result %>% 
+  select( term_name, source,FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+<br/>
+
+<br/>
+
+### ESC specific genes
+
+Here are the overrepresentation results using genes only expressed in ESC lines using all of the genes identified in ESC and NPC lines as the custom background.
+
+```{r esc_specific_genes_ora}
+#| warning: false
+#| message: false
+#| cache: true
+
+# get esc specific genes
+all.genes %>% 
+  filter( !ensembl_gene_id %in% npc.genes$ensembl_gene_id & ensembl_gene_id %in% esc.genes$ensembl_gene_id) -> npc.specific.genes-> esc.specific.genes
+
+esc_specific_ora <- gost(query = esc.specific.genes$mgi_symbol, 
+                 organism = "mmusculus",
+                 significant = TRUE, 
+                 domain_scope = "custom",
+                 custom_bg = all.genes$mgi_symbol,
+                 correction_method = "fdr",
+                 evcodes = TRUE)
+esc_specific_ora$result <- esc_specific_ora$result %>% filter(term_size <500)
+
+
+```
+
+```{r esc_specific_ora_gostplot}
+#| warning: false
+#| message: false
+
+gostplot(esc_specific_ora, capped = FALSE)
+
+```
+
+```{r esc_specific_ora_table}
+#| warning: false
+#| message: false
+
+esc_specific_ora$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+## Gene Set Variation Analysis of combined ESC-NPC Data set
+
+```{r esc_npc_rna_gsva}
+#| warning: false
+#| message: false
+#| cache: true
+#| results: hide
+# reading in the GO + mgi downloaded from: http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt
+go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt") %>% 
+  mutate( genes = str_split(genes, ",")) %>% 
+  unnest() # separete the symbols, note the overlap: length(intersect(unique(go_terms$genes), all.prots$mgi_symbol) ) = 6757
+
+
+slim_go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/map2MGIslim.txt") %>% 
+  select(-term) %>% 
+  mutate( ONT = case_when( aspect == "P" ~  "BP",
+                     aspect == "F" ~ "MF",
+                     aspect == "C" ~ "CC"
+                     )
+          ) %>% 
+  select(-aspect)
+
+genesbygo <- split(go_terms$genes, go_terms$GO_id)
+
+go_terms_annot <- go_terms %>%  
+  select(GO_id) %>% 
+  distinct() %>% 
+  left_join( slim_go_terms %>%  select( GO_id, ONT) %>% distinct())
+
+goannot_wdef <- AnnotationDbi::select(GO.db, keys= unique(go_terms$GO_id), columns=c("GOID","DEFINITION","ONTOLOGY","TERM")) %>%
+  left_join( slim_go_terms, by=c("GOID"="GO_id")) %>% 
+  mutate( ONTOLOGY = ONT) %>% 
+  select(-ONT)
+
+go_bp <- goannot_wdef %>% filter( ONTOLOGY == "BP") %>% 
+  select(GOID) %>%  distinct()
+
+# expr - change protein id's to symbols for GSVA with GO
+shared.genes2 <- all.genes %>% 
+  filter(ensembl_gene_id %in% shared.genes)
+shared.expr.npc_rna_upd <- shared.expr.npc_rna[, shared.genes2$ensembl_gene_id]
+colnames(shared.expr.npc_rna_upd) <- shared.genes2$mgi_symbol
+rownames(shared.expr.npc_rna_upd) <- paste0( rownames(shared.expr.npc_rna_upd),"_npc")
+shared.expr.esc_rna_upd <- shared.expr.esc_rna[,shared.genes2$ensembl_gene_id]
+colnames(shared.expr.esc_rna_upd) <- shared.genes2$mgi_symbol
+rownames(shared.expr.esc_rna_upd) <- paste0( rownames(shared.expr.esc_rna_upd),"_esc")
+
+shared.expr.merged <- rbind(shared.expr.npc_rna_upd, 
+                            shared.expr.esc_rna_upd)
+
+# I can't seem to run GSVA anymore! Keep erroring out. 
+# I was able to run it separately in a stand alone R session.
+# loading the results here instead of running.
+# load(here("_data","Results_from_GSVA_2022-09-23.RData"))
+gsva_rna_esc_npc <- gsva(  expr = t(shared.expr.merged),
+                    genesbygo,
+                    method ="gsva",
+                    kcdf = "none",
+                    min.sz = 5,
+                    max.sz = 1000,
+                    mx.diff = TRUE)
+
+# following up on rna results
+gsva_rna_esc_npc %>% 
+  as_tibble(rownames = "Category") %>% 
+  filter( Category %in% go_bp$GOID) %>% #filtering for BP
+  pivot_longer( cols = rownames(shared.expr.merged),
+                values_to = "Enrichment_Score",
+                names_to = "sample") %>% 
+  separate( sample, into = c("temp1","temp2", "type"), sep = "_") %>% 
+  unite( sampleid, c(temp1, temp2), sep = "_") %>% 
+  # add sexes + lifr genotypes
+  left_join( covarTidy.npc_rna) -> gsva_rna_esc_npc_results
+
+gsva_rna_esc_npc_results %>% 
+  group_by( Category) %>% 
+  rstatix::anova_test( Enrichment_Score ~ type+sex+type*sex) %>% 
+  rstatix::adjust_pvalue( method = "BH") %>%
+  rstatix::add_significance("p.adj") %>% 
+  ungroup() -> gsva_rna_esc_npc_aov
+
+gsva_rna_esc_npc_results %>% 
+  group_by(Category) %>% 
+  rstatix::tukey_hsd( Enrichment_Score ~ type+sex+type*sex) %>% 
+  ungroup() %>% 
+  as_tibble() %>% 
+  left_join( goannot_wdef, by = c("Category" = "GOID")) -> gsva_rna_esc_npc_tukey
+
+gsva_rna_esc_npc_aov %>% 
+  as_tibble() %>% 
+  filter( p.adj.signif != "ns" ) -> signif_eff_terms_rna_esc_npc
+
+gsva_rna_esc_npc_tukey %>% 
+  inner_join( ., select( signif_eff_terms_rna_esc_npc, Category, term = Effect)) -> signif_results_tukey_rna_esc_npc
+
+```
+
+Below are the list of GO Biological processes that show significant differences by cell type, and sex(adjusted p-value \<0.01).
+
+```{r gsva_results_table_esc_npc}
+#| warning: false
+#| message: false
+
+
+gsva_rna_esc_npc_tukey %>%
+  filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="sex"))$Category, term == "sex" ) %>%
+  rbind(
+    gsva_rna_esc_npc_tukey %>%
+      filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="type"))$Category, term == "type" )
+    
+  ) %>% 
+  #   rbind(
+  #   gsva_rna_esc_npc_tukey %>%
+  #     filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="type:sex"))$Category, term == "type:sex" )
+  #   
+  # ) %>% 
+  select(Effect= term, Category, TERM, group1, group2, estimate,p.adj) %>% 
+  #filter( p.adj < 0.01) %>% 
+  distinct() %>% 
+ mutate( "Adjusted p-value" = formatC(p.adj, digits=2, format ="e"),
+          estimate= round(estimate,2)) %>% 
+  select(-p.adj) %>% 
+  arrange(estimate) %>% 
+  create_dt()
+
+```
+
+Examples:
+
+```{r gsva_examples_esc_npc}
+#| warning: false
+#| message: false
+#| fig-width: 8
+#| fig-height: 4
+
+
+# ribosome biogenesis GO:0042254
+# translation GO:0006412
+# GO:0010564	regulation of cell cycle process
+# GO:0006094	gluconeogenesis
+# GO:0001825	blastocyst formation
+
+# GO:0030182	neuron differentiation
+# GO:0048699	generation of neurons
+# GO:0048666	neuron development
+# GO:0021954	central nervous system neuron development
+# GO:0045995	regulation of embryonic development
+# GO:0097150	neuronal stem cell population maintenance
+# GO:0007417	central nervous system development
+
+gsva_rna_esc_npc_results %>%
+  filter( Category ==  "GO:0007417") %>%
+  left_join( select(goannot_wdef, Category = GOID, TERM)) %>% 
+  ggplot()+
+  aes( x = type,
+       y = Enrichment_Score,
+       col = type)+
+  geom_boxplot(width =0.2, size = 1.1)+
+  #geom_jitter()+
+  #geom_beeswarm(aes(col = sex))+
+  theme_pubclean(base_size = 16)+
+  stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0007417", term == "type"),
+                      label = "{p.adj.signif}",
+                      y.position = 0.85)+
+  color_palette("jco")+
+  ylab("Enrichment Score")+
+  ggtitle("Central nervous system development")+
+  xlab("")+
+  ylim(-1,1)+
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 16),
+        axis.title = element_text(size =16),
+        title = element_text(size =10)) -> plot_nerv
+
+gsva_rna_esc_npc_results %>%
+  filter( Category ==  "GO:0006094") %>%
+  left_join( select(goannot_wdef, Category = GOID, TERM)) %>% 
+  ggplot()+
+  aes( x = type,
+       y = Enrichment_Score,
+       col = type)+
+  geom_boxplot(width =0.2, size = 1.1)+
+  #geom_jitter()+
+  #geom_beeswarm(aes(col = sex))+
+  theme_pubclean(base_size = 16)+
+  stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0006094", term == "type"),
+                      label = "{p.adj.signif}",
+                      y.position = 0.85)+
+  color_palette("jco")+
+  ylab("Enrichment Score")+
+  ggtitle("Gluconeogenesis")+
+  xlab("")+
+  ylim(-1,1)+
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 16),
+        axis.title = element_text(size =16),
+        title = element_text(size =10)) -> plot_glucogenesis
+
+gsva_rna_esc_npc_results %>%
+  filter( Category ==  "GO:0006412") %>%
+  left_join( select(goannot_wdef, Category = GOID, TERM)) %>% 
+  ggplot()+
+  aes( x = type,
+       y = Enrichment_Score,
+       col = type)+
+  geom_boxplot(width =0.2, size = 1.1)+
+  #geom_jitter()+
+  #geom_beeswarm(aes(col = sex))+
+  theme_pubclean(base_size = 16)+
+  stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0006412", term == "type"),
+                      label = "{p.adj.signif}",
+                      y.position = 0.85)+
+  color_palette("jco")+
+  ylab("Enrichment Score")+
+  ggtitle("Translation")+
+  xlab("")+
+  ylim(-1,1)+
+  theme(axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 16),
+        axis.title = element_text(size =16),
+        title = element_text(size =10)) -> plot_translation
+
+ggarrange( plot_nerv, plot_translation, common.legend =  TRUE, legend = "none", nrow = 1)
+
+```
+
+```{r fig_2ab}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 4
+
+
+# sample_hist with the correlations
+
+# gsva examples
+gsva_plot <- ggarrange( plot_nerv, plot_translation, common.legend =  TRUE, legend = "none", nrow = 1)
+
+figure2_ab <- ggarrange( sample_hist, gsva_plot, nrow = 1, widths = c(.5, 1))
+
+figure2_ab
+# ggsave(figure2_ab, filename = here("figures","figure2_ab.svg"), width = 12, height = 4, dpi = 300, units = "in")
+
+```
+:::
 
 # Differential expression analysis
 
+I am using Wilcoxon rank sum test as an alternative to DESEQ2.
+I am using upper quantile normalized, batch corrected (using comBAT) gene expression counts for testing.
 
+Q: Do I need to correct for sex since it is a dominant effect in ESCs or is it okay to leave that in?
+
+```{r wilcoxon_rank_test}
+#| warning: false
+#| message: false
+#| cache: true
+
+
+expr.npc_rna %>% 
+  as_tibble( rownames = "sampleid") %>% 
+  pivot_longer( colnames(expr.npc_rna), names_to = "ensembl_gene_id", values_to = "npc") %>% 
+  full_join(
+    expr.esc_rna %>% 
+      as_tibble( rownames = "sampleid") %>% 
+      pivot_longer( colnames(expr.esc_rna), names_to = "ensembl_gene_id", values_to = "esc") 
+  ) %>% 
+  filter(sampleid %in% shared.samples, ensembl_gene_id %in% shared.genes) %>% 
+  pivot_longer( cols = c("esc","npc"), names_to = "cell_type", values_to ="expr") -> npc_esc_expr_df
+
+# get adjusted p values
+npc_esc_expr_df %>% 
+  #filter( ensembl_gene_id %in% shared.genes[1:10]) %>% 
+  group_by(ensembl_gene_id) %>% 
+  rstatix::wilcox_test(., expr~cell_type, p.adjust.method = "BH") -> npc_esc_wilcox_p
+
+# get log2fold changes
+npc_esc_expr_df %>% 
+  #filter( ensembl_gene_id %in% shared.genes[1:10]) %>% 
+  group_by(ensembl_gene_id, cell_type) %>% 
+  summarize( expr = mean(expr, na.rm = T)) %>% 
+  ungroup() %>% 
+  pivot_wider( id_cols = "ensembl_gene_id", names_from = "cell_type", values_from ="expr" ) %>% 
+  mutate( log2foldchange = log2(npc/esc)) -> npc_esc_log2fold
+    
+npc_esc_log2fold %>% 
+  left_join( npc_esc_wilcox_p ) -> npc_esc_wilcox_df
+
+```
+
+::: {#NPC_deseq .panel-tabset .nav-pills}
+## Table of differentially expressed genes
+
+Here is the table of differentially expressed genes (FDR \<0.05, abs(log2foldchange) \> 2).
+
+```{r wilcox_table}
+#| warning: false
+#| message: false
+
+npc_esc_wilcox_df %>% 
+  filter( p <0.05, abs(log2foldchange) > 2) %>% 
+  left_join(all.genes) %>% 
+  select(ensembl_gene_id,
+         mgi_symbol,
+         `Mean expresion in ESCs` = esc,
+         `Mean expression in NPCs` = npc,
+         `Fold Change (log2)`=log2foldchange,
+         FDR = p) %>% 
+  mutate( `Fold Change (log2)` = round(`Fold Change (log2)`,2),
+          `Mean expresion in ESCs`=round(`Mean expresion in ESCs`,2),
+          `Mean expression in NPCs`=round(`Mean expression in NPCs`,2),
+          FDR = formatC(FDR, format = "e", digits = 2)) %>% 
+  arrange(`Fold Change (log2)`) %>% 
+  create_dt()
+
+```
+
+I can't seem to get WebGestaltR to work properly, keeps erroring out.
+So instead I am doing ORA with up & down regulated genes.
+
+```{r gsea_diff_genes}
+#| warning: false
+#| message: false
+#| cache: true
+#| eval: false
+
+
+gsea_deg_npc_esc <- WebGestaltR::WebGestaltR(enrichMethod = "GSEA",
+                                         organism = "mmusculus",
+                                         interestGene = select(npc_esc_wilcox_df, ensembl_gene_id, log2foldchange),  
+                                         interestGeneType = "ensembl_gene_id",
+                                         enrichDatabase = c("geneontology_Biological_Process_noRedundant",
+                                                            "geneontology_Cellular_Component_noRedundant",
+                                                            "geneontology_Molecular_Function_noRedundant",
+                                                            "pathway_KEGG",
+                                                            "pathway_Reactome",
+                                                            "pathway_Wikipathway",
+                                                            "network_Transcription_Factor_target",
+                                                            "network_CORUM"), 
+                                         isOutput = TRUE,
+                                         topThr=100)
+
+```
+
+## ORA with upregulated genes in NPCs
+
+```{r npc_up_genes_ora}
+#| warning: false
+#| message: false
+#| cache: true
+
+npc_esc_wilcox_df %>% 
+  filter( p < 0.05, (log2foldchange) > 2) %>% 
+  select(ensembl_gene_id, log2foldchange) %>% 
+  left_join(all.genes) -> upreg_npc_esc
+
+upreg_npc_esc_ora <- gost(query = upreg_npc_esc$mgi_symbol, 
+                 organism = "mmusculus",
+                 significant = TRUE, 
+                 domain_scope = "custom",
+                 custom_bg = filter(all.genes, ensembl_gene_id %in% shared.genes)$mgi_symbol,
+                 correction_method = "fdr",
+                 evcodes = TRUE)
+upreg_npc_esc_ora$result <- upreg_npc_esc_ora$result %>% filter(term_size <500)
+
+
+```
+
+```{r npc_up_genes_ora_plot}
+#| warning: false
+#| message: false
+
+gostplot(upreg_npc_esc_ora)
+
+
+```
+
+```{r npc_up_genes_ora_table}
+#| warning: false
+#| message: false
+
+upreg_npc_esc_ora$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+Example:
+
+```{r example_upregulated}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 6
+
+# regulation of nervous system development
+
+npc_up_genes <- upreg_npc_esc_ora$result %>%
+  filter( term_name %in% c( "regulation of nervous system development",
+                            "central nervous system neuron differentiation",
+                            "ESC pluripotency pathways")
+          )%>%
+  select(term_name, intersection) %>%
+  separate_rows(intersection, sep = ",") %>%
+  rename( mgi_symbol = intersection) %>%
+  left_join( npc_esc_wilcox_df %>%
+               select( ensembl_gene_id, log2foldchange, p) %>%
+               left_join( all.genes %>%
+                            select(mgi_symbol, ensembl_gene_id))) %>%
+  select( mgi_symbol, term_name, log2foldchange) 
+
+
+
+g<-graph_from_data_frame(npc_up_genes[,1:2], directed=FALSE)
+V(g)$lfc <- c((npc_up_genes %>% 
+  select(mgi_symbol, log2foldchange) %>% 
+  distinct())$log2foldchange, -10,-10,-10) # last two are the category names
+
+ggraph(g)+
+  geom_edge_link(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-8,8))+
+  theme_classic()+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="Log Fold Change\nin NPCs")
+
+
+```
+
+## ORA with downregulated genes in NPCs
+
+```{r npc_down_genes}
+#| warning: false
+#| message: false
+#| cache: true
+npc_esc_wilcox_df %>% 
+  filter( p <0.05, (log2foldchange) < -2) %>% 
+  select(ensembl_gene_id, log2foldchange) %>% 
+  left_join(all.genes) -> downreg_npc_esc
+
+downreg_npc_esc_ora <- gost(query = downreg_npc_esc$mgi_symbol, 
+                 organism = "mmusculus",
+                 significant = TRUE, 
+                 domain_scope = "custom",
+                 custom_bg = filter(all.genes, ensembl_gene_id %in% shared.genes)$mgi_symbol,
+                 correction_method = "fdr",
+                 evcodes = TRUE)
+downreg_npc_esc_ora$result <- downreg_npc_esc_ora$result %>% filter(term_size <500)
+
+```
+
+```{r npc_down_genes_ora_plot}
+#| warning: false
+#| message: false
+
+gostplot(downreg_npc_esc_ora)
+
+```
+
+```{r npc_down_genes_ora_table}
+#| warning: false
+#| message: false
+
+downreg_npc_esc_ora$result %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+Example:
+
+```{r example_downregulated}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 5
+
+npc_down_genes <- downreg_npc_esc_ora$result %>%
+  filter( term_name %in% c( "response to leukemia inhibitory factor",
+                            "cellular response to leukemia inhibitory factor",
+                            "ribosome")
+          )%>%
+  select(term_name, intersection) %>%
+  separate_rows(intersection, sep = ",") %>%
+  rename( mgi_symbol = intersection) %>%
+  left_join( npc_esc_wilcox_df %>%
+               select( ensembl_gene_id, log2foldchange, p) %>%
+               left_join( all.genes %>%
+                            select(mgi_symbol, ensembl_gene_id))) %>%
+  select( mgi_symbol, term_name, log2foldchange)
+
+
+
+g<-graph_from_data_frame(npc_down_genes, directed=FALSE)
+V(g)$lfc <- c((npc_down_genes %>% 
+  select(mgi_symbol, log2foldchange) %>% 
+  distinct())$log2foldchange, -10,-10,-10) # last three are the category names
+
+ggraph(g)+
+  geom_edge_link(col="gray", alpha=0.1)+
+  geom_node_point(aes(col=lfc),size=5)+
+  geom_node_text(aes(label = name), repel = TRUE )+
+  scale_color_viridis( limits = c(-8,8))+
+  theme_classic()+
+  theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank())+
+  labs(col="Log Fold Change\nin NPCs")
+
+
+```
+:::
