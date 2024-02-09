@@ -272,7 +272,7 @@ Both ESC and NPC expression values were transformed to rank normal scores prior 
 
 In this first notebook, I focus on the NPC transcriptome investigating the variation in gene expression in DO mNPCs using a variety of methods including: principal component analysis (PCA), and gene set variation analysis (GSVA).
 Then, I looked at the co-variation across DO mNPCs and mESCs by looking at the agreement between transcriptomes within genetically identical samples and between genes across cell states.
-Further, there are genes uniquely expressed in each cell state which I functionally characterized using overrepresentation analysis (ORA).
+Further, there are genes uniquely expressed in each cell state which I functionally characterized using over-representation analysis (ORA).
 I used Wilcoxon rank sum test to identify differentially expressed genes in mNPCs in contrast to mESCs and functionally characterized up and down regulated genes using ORA.
 
 # Variation in the DO NPC transcriptome
@@ -337,7 +337,6 @@ mean_npc_per_sample <- expr.npc_rna %>%
 ```
 
 ::: {#NPC_var .panel-tabset .nav-pills}
-
 ## Overview
 
 Below are the distributions of mean and variation of transcripts in DO mNPC lines.
@@ -842,8 +841,6 @@ g.high.var$result %>%
 
 <br>
 
-<br>
-
 ORA results with least variable (lowest .05% CV) genes in mNPCs (FDR \<0.01):
 
 ```{r ora_least_var}
@@ -1073,6 +1070,8 @@ gsva_rna_tukey %>%
 
 ```
 
+### GSVA pathways with significant effects
+
 Below are the list of GO Biological processes that show significant differences by sex or genotype at the *Lifr* locus, or their interaction (adjusted p-value \< 0.01).
 
 ```{r gsva_results_table}
@@ -1098,7 +1097,7 @@ gsva_rna_tukey %>%
 
 ```
 
-### QTL mapping with GSVA scores {.tabset .tabset-fade .tabset-pills}
+### GSVA QTL table
 
 ```{r gsva_qtl_scans}
 #| warning: false
@@ -1123,7 +1122,7 @@ gsva_results_signif_mat_rankZ <- apply(gsva_results_signif_mat, 2,rankZ )
 # save( gsva_qtl, file = here("_data","GSVA_npc_qtl_scans.RData"))
 
 load(here("_data","GSVA_npc_qtl_scans.RData"))
-gsva_qtl_peaks <- find_peaks( gsva_qtl, threshold = 10, gmap)
+gsva_qtl_peaks <- find_peaks( gsva_qtl, threshold = 7, gmap)
 # add interp_peak_bp, before, after
 gsva_qtl_peaks <- gsva_qtl_peaks %>% 
   left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% 
@@ -1147,8 +1146,6 @@ gsva_qtl_peaks %>%
 
 ```
 
-Looking closer at some of them:
-
 ```{r closer_look_at_gsva_results}
 
 # GO:0001825 blastocyst formation	
@@ -1165,7 +1162,7 @@ gsva_qtl_highlight <- gsva_qtl_peaks %>%
     (chr == 10 & between(interp_bp_peak, 33e06, 40e06) ) |
     (chr == 11 & between(interp_bp_peak, 107e06, 111e06) )
   ) %>% 
-  filter(lod > 7)
+  filter(lod > 8)
   # filter(
   #   TERM %in% c("mRNA processing", "cell cycle", "mitotic chromosome condensation", "regulation of double-strand break repair via homologous recombination", "anaphase-promoting complex-dependent catabolic process", "protein localization to kinetochore", "positive regulation of DNA repair", "cell division", "DNA repair", "chromosome condensation",
   #            "proteolysis", "dephosphorylation", "endoplasmic reticulum calcium ion homeostasis", "neuron development",
@@ -1176,14 +1173,13 @@ gsva_qtl_highlight <- gsva_qtl_peaks %>%
 
 ```
 
-::: {#GSVA_qtls .panel-tabset .nav-pills}
+### GSVA qtl peaks
 
+::: {#GSVA_qtls .panel-tabset .nav-pills}
 ```{r gsva_qtl_follow_up_plots}
-#| results: asis
-#| echo: false
-#| eval: true
-#| cache: true
+#| warning: false
 #| message: false
+#| results: asis
 #| fig-height: 6
 #| fig-width: 12
 
@@ -1193,7 +1189,7 @@ for( i in 1:nrow(gsva_qtl_highlight)){
   peak_chr <- gsva_qtl_highlight$peak_chr[i]
   lodcolumn <- gsva_qtl_highlight$lodcolumn[i]
   
-  #pQTL scan
+  # eQTL scan
   qtl_scan <- scan1(genoprobs = probs.npc_rna,
                  pheno = gsva_results_signif_mat_rankZ[,lodcolumn,drop = F],
                  kinship = kinship_loco.npc_rna,
@@ -1202,23 +1198,22 @@ for( i in 1:nrow(gsva_qtl_highlight)){
                    pheno = gsva_results_signif_mat_rankZ[,lodcolumn,drop = F],
                    kinship = kinship_loco.npc_rna[[peak_chr]],
                    addcovar = covar.npc_rna)
-  cat('### ',gsub(":","",gsva_qtl_highlight$TERM[i]),'peak on', peak_chr ,' \n')
+
+  cat("\n#### ",gsva_qtl_highlight$TERM[i],"peak on", peak_chr ,"\n")
   plot_coefCC(qtl_effs,
-                            pmap, 
-                            scan1_output = qtl_scan, 
+                            pmap,
+                            scan1_output = qtl_scan,
                             main=paste0(gsva_qtl_highlight$TERM[i]," plot"),
-              xlim = c(gsva_qtl_highlight$interp_bp_peak[i]-20e06, 
+              xlim = c(gsva_qtl_highlight$interp_bp_peak[i]-20e06,
                        gsva_qtl_highlight$interp_bp_peak[i]+20e06) )
   abline(v=gsva_qtl_highlight$interp_bp_peak[i],col="red",lwd=2,lty=3)
-  cat(' \n \n')
+  cat("\n\n")
 }
 
 
 
 ```
-
 :::
-
 :::
 
 # Covariation in the DO ESC and NPC transcript abundance
@@ -1570,10 +1565,6 @@ ggarrange(sample_hist, null_dist_plot, widths = c(1, 0.5))
 
 ```
 
-<br/>
-
-<br/>
-
 ### Between genes
 
 ```{r gene_cor}
@@ -1639,7 +1630,7 @@ gene_cor_df %>%
 
 ```
 
-Overrpresentation results for genes with significant negative and positive correlation and genes with no correlation.
+Over-representation results for genes with significant negative and positive correlation and genes with no correlation.
 
 ```{r gene_cor_ora}
 #| warning: false
@@ -1699,7 +1690,7 @@ ora_all_corr %>%
 
 ### NPC specific genes
 
-Here are the overrepresentation results using genes only expressed in NPC lines using all of the genes identified in ESC and NPC lines as the custom background.
+Here are the over-representation results using genes only expressed in NPC lines using all of the genes identified in ESC and NPC lines as the custom background.
 
 ```{r npc_specific_genes_ora}
 #| warning: false
@@ -1743,13 +1734,9 @@ npc_specific_ora$result %>%
 
 ```
 
-<br/>
-
-<br/>
-
 ### ESC specific genes
 
-Here are the overrepresentation results using genes only expressed in ESC lines using all of the genes identified in ESC and NPC lines as the custom background.
+Here are the over-representation results using genes only expressed in ESC lines using all of the genes identified in ESC and NPC lines as the custom background.
 
 ```{r esc_specific_genes_ora}
 #| warning: false

@@ -1248,11 +1248,11 @@ g.unique.dist_esc$result <- g.unique.dist_esc$result %>% filter(term_size < 660)
 
 ::: {.panel-tabset .nav-pills}
 
-Example of shared eQTL with matching allele effects: Csnk2a1
+<!-- Example of shared eQTL with matching allele effects: Csnk2a1 -->
 
-Example of shared eQTL with opposite allele effects: Amph
+<!-- Example of shared eQTL with opposite allele effects: Amph -->
 
-Example of unique eQTL: Gbx2 (l), Lats1(d)
+<!-- Example of unique eQTL: Gbx2 (l), Lats1(d) -->
 
 ### Csnk2a1 (local)
 
@@ -3286,11 +3286,10 @@ Looking at expression change in genes identified in relation to spindle assembly
 ```{r deg_ora_pathways}
 #| warning: false
 #| message: false
-#| eval: false
+#| eval: true
 #| fig-width: 16
 #| fig-height: 10
-
-# qwraps2::lazyload_cache_dir("01d_esc_npc_deseq_cache/html/")
+qwraps2::lazyload_cache_dir("DO_mNPC_transcriptome_cache/html/wilcoxon_rank_test_f5bbb595c10b24fd96f8ca3f988c67f1.RData")
 
 # any category with spindle, segregation
 chr1_spindle_genes <- g.chr1$result %>% 
@@ -3831,7 +3830,7 @@ pign_as %>%
    as.data.frame() %>% 
   filter( ENSMUSG00000056536 > 5) %>% 
   select( LOD = ENSMUSG00000056536,
-          snp_id = snpinfo.snp_id,
+          snp_id = snpinfo.snp,
           pos = snpinfo.pos,
           alleles = snpinfo.alleles,
           consequence = snpinfo.consequence,
@@ -4155,62 +4154,62 @@ shared_mediation_results_odds %>%
 ```
 
 
-### Overlap between chr1 target genes and other sets overrepresented with SAC
+<!-- ### Overlap between chr1 target genes and other sets overrepresented with SAC -->
 
-I have found SAC genes overrepresented in:
+<!-- I have found SAC genes overrepresented in: -->
 
-  -   PC1 drivers
-  -   Genes with low variation
-  -   Genes with significant sex effects
-  -   Chr1 hotspot target genes 
-  
-Let's look at the overlap between those categories. Are we always picking up the same set of genes? Note that, SAC also shows differences in activity between sexes and cell types according to GSVA scores. 
+<!--   -   PC1 drivers -->
+<!--   -   Genes with low variation -->
+<!--   -   Genes with significant sex effects -->
+<!--   -   Chr1 hotspot target genes  -->
 
-```{r}
-#| warning: false
-#| message: false
+<!-- Let's look at the overlap between those categories. Are we always picking up the same set of genes? Note that, SAC also shows differences in activity between sexes and cell types according to GSVA scores.  -->
 
-chr1_spindle_genes <- g.chr1$result %>% 
-  filter( p_value <0.01) %>% 
-  filter( str_detect( term_name, "(?i)spindle") |
-            str_detect(term_name, "(?i)segregation")|
-            str_detect(term_name, "(?i)chromatid") |
-            str_detect(term_name, "(?i)kinetochore") |
-            str_detect(intersection,"Mad2l1")) %>% 
-  select(term_name, mgi_symbol= intersection) %>%
-  separate_rows(mgi_symbol, sep = ",") %>% 
-  left_join(npc.genes)
+<!-- ```{r} -->
+<!-- #| warning: false -->
+<!-- #| message: false -->
 
-# from 01b notebook:
-# spindle_genes -- pc1 drivers ORA results
-# spindle_genes_sex_eff -- sex eff genes ORA results
-# spindle_genes_low_var -- low varitation genes ORA results
+<!-- chr1_spindle_genes <- g.chr1$result %>%  -->
+<!--   filter( p_value <0.01) %>%  -->
+<!--   filter( str_detect( term_name, "(?i)spindle") | -->
+<!--             str_detect(term_name, "(?i)segregation")| -->
+<!--             str_detect(term_name, "(?i)chromatid") | -->
+<!--             str_detect(term_name, "(?i)kinetochore") | -->
+<!--             str_detect(intersection,"Mad2l1")) %>%  -->
+<!--   select(term_name, mgi_symbol= intersection) %>% -->
+<!--   separate_rows(mgi_symbol, sep = ",") %>%  -->
+<!--   left_join(npc.genes) -->
 
-spindle_genes %>% 
-  mutate( type = "PC1 driver") %>% 
-  rbind(
-    spindle_genes_sex_eff %>% 
-      mutate( type = "Shows significant sex effect")
-  ) %>% 
-  rbind(
-    spindle_genes_low_var %>% 
-      mutate( type = "Shows low variation") 
-  ) %>% 
-  rbind(
-    chr1_spindle_genes %>% 
-      mutate(type = "Chr1 hotspot target")
-  ) %>% 
-  select(mgi_symbol,type) %>% 
-  distinct() %>% 
-  group_by(mgi_symbol) %>% 
-  mutate( type = paste0(collapse = ", ", type), n = n()) %>% 
-  distinct() %>% 
-  create_dt()
+<!-- # from 01b notebook: -->
+<!-- # spindle_genes -- pc1 drivers ORA results -->
+<!-- # spindle_genes_sex_eff -- sex eff genes ORA results -->
+<!-- # spindle_genes_low_var -- low varitation genes ORA results -->
+
+<!-- spindle_genes %>%  -->
+<!--   mutate( type = "PC1 driver") %>%  -->
+<!--   rbind( -->
+<!--     spindle_genes_sex_eff %>%  -->
+<!--       mutate( type = "Shows significant sex effect") -->
+<!--   ) %>%  -->
+<!--   rbind( -->
+<!--     spindle_genes_low_var %>%  -->
+<!--       mutate( type = "Shows low variation")  -->
+<!--   ) %>%  -->
+<!--   rbind( -->
+<!--     chr1_spindle_genes %>%  -->
+<!--       mutate(type = "Chr1 hotspot target") -->
+<!--   ) %>%  -->
+<!--   select(mgi_symbol,type) %>%  -->
+<!--   distinct() %>%  -->
+<!--   group_by(mgi_symbol) %>%  -->
+<!--   mutate( type = paste0(collapse = ", ", type), n = n()) %>%  -->
+<!--   distinct() %>%  -->
+<!--   create_dt() -->
 
 
-  
 
-```
+
+<!-- ``` -->
 
 
 
