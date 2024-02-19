@@ -53,6 +53,8 @@ library(Hmisc) # rcorr
 library(gprofiler2)
 # set gprofiler version
 set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e107_eg54_p17/")
+library(fgsea)
+library(msigdbr)
 
 library(sva)
 library(WebGestaltR)
@@ -454,6 +456,7 @@ ggarrange( p.mean_sample.hist, p.var_sample.hist,  p.var.mean_sample, nrow = 1, 
 #| message: false
 pca.npc <- prcomp(expr.npc_rna, scale.=T, center=T)
 
+
 ```
 
 Let's look at the first 10 PCs and how they group the data for the NPC transcriptome.
@@ -584,11 +587,48 @@ g.pc1_top$result |>
 
 ```
 
-Looking at the genes identified as part of:
+PC1 drivers with positive loadings are over-represented for:
 
--   Spindle checkpoint and related processes
+-   Cell cycle. 
+  
+  +   More specifically the "Mitotic Metaphase and Anaphase", the spindle assembly checkpoint and related processes. 
+  
+  +   DNA replication and repair.
 
--   Pluripotency regulation and related processes
+-   RNA splicing.
+
+-   Pluripotency regulation and related processes such as: "response to leukemia inhibitory factor".
+
+-   Translation: ribosome biogenesis, translation initation.
+
+
+-   TF motifs: OTX2, PITX1, PITX2, c-MYC, MXI1, E4BP4, HFH8, PITX3, ZFP536, SAP1A, ARNT, 
+
+
+
+PC1 drivers with negative loadings are over-represented for:
+
+-   Genes located in:
+  
+  +   Golgi.
+  
+  +   Lysosome.
+  
+  +   Transport vesicle.
+  
+  +   Secretory granule.
+
+-   Genes involved in autophagy and neuron apoptotic process
+
+-   Genes found in axons.
+
+-   TF motifs: MAFA, NRF2, MATH1, c-ETS2, TFEA
+
+-   Many human phenotypes, including neuronal ones. 
+
+
+Looking at the genes identified as part of some of the categories above.
+
 
 ```{r ora_pc1_genes}
 #| warning: false
@@ -1404,6 +1444,112 @@ ggarrange(var_plot, sd_plot, cv_plot, nrow = 1, common.legend = T)
 
 ```
 
+
+## Principal component analysis
+
+```{r pca_all_data}
+#| warning: false
+#| message: false
+
+# pca with all the gene expr data
+shared.expr.esc_rna_temp <- shared.expr.esc_rna
+rownames(shared.expr.esc_rna_temp) <- paste0(rownames(shared.expr.esc_rna), "_type:esc")
+shared.expr.npc_rna_temp <- shared.expr.npc_rna
+rownames(shared.expr.npc_rna_temp) <- paste0(rownames(shared.expr.npc_rna), "_type:npc")
+all_expr <- rbind(shared.expr.esc_rna_temp,
+                  shared.expr.npc_rna_temp
+                 )
+
+pca_esc_npc <- prcomp( all_expr, scale.=T, center=T)
+
+annot_all_expr <- tibble( sample = rownames(all_expr)) |>
+  separate(sample, into = c("sampleid","type"),sep = "_type:") |> 
+  left_join( covarTidy.esc_rna |> select(sampleid, sex)) |> 
+  left_join( covarTidy.npc_rna |> select(sampleid, sex))
+
+
+
+```
+
+Let's look at the first 10 PCs and how they group the data for the ESC and NPC transcriptomes.
+
+```{r pca_plot_pc1to10_all}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 16
+pca_esc_npc$x |> 
+  as_tibble( rownames = "sample") %>%
+  separate(sample, into = c("sampleid","type"),sep = "_type:") |> 
+  left_join(annot_all_expr) %>%
+  mutate(sex = ifelse(sex == "F", "Female", "Male")) %>%
+  GGally::ggpairs(
+    columns = 3:12, progress = FALSE, ggplot2::aes(color = sex, shape = type),
+    upper = list(continuous = "density", combo = "box_no_facet"),
+    lower = list(continuous = "points", combo = "dot_no_facet")
+  ) + 
+  theme_pubclean(base_size = 14) +
+  color_palette("npg")+
+  fill_palette("npg")+
+  #scale_fill_manual( values = c(esc=qtl.colors[["esc_rna"]], npc=qtl.colors[["npc_rna"]]))+
+  #scale_color_manual( values = c(esc=qtl.colors[["esc_rna"]], npc=qtl.colors[["npc_rna"]]))+
+  theme(legend.position = "top")
+
+```
+
+```{r all_scree_plot}
+#| warning: false
+#| message: false
+
+
+# plot showing variance explained
+var_explained <- (pca_esc_npc$sdev^2 / sum(pca_esc_npc$sdev^2))
+tibble(var =  var_explained[1:10]* 100, PC = paste0("PC", seq(1:10))) %>%
+  arrange(desc(var)) %>%
+  mutate(label = factor(PC, levels = PC)) %>%
+  ggplot(aes(x = label, y = var)) +
+  geom_col() +
+  xlab("Principal Component") +
+  ylab("% Variation explained") +
+  theme_pubclean(base_size = 14)+
+  ylim(0,50)
+
+
+```
+
+```{r pc1_4_plot_all}
+#| warning: false
+#| message: false
+#| fig-height: 4
+#| fig-width: 6
+
+pca_esc_npc$x%>%
+  as_tibble( rownames = "sample") %>%
+  separate(sample, into = c("sampleid","type"),sep = "_type:") |> 
+  left_join(annot_all_expr) %>%
+  mutate(sex = ifelse(sex == "F", "Female", "Male"),type = toupper(type)) %>%
+  ggplot()+
+  aes(
+    x = PC1, 
+    y = PC4, 
+    shape = type,
+    color = sex
+  )+
+  geom_point(size = 4, alpha = 0.6)+
+  theme_pubclean(base_size = 20)+
+  color_palette("npg")+
+  #scale_color_manual(values = c(esc=qtl.colors[["esc_rna"]],npc = qtl.colors[["npc_rna"]]))+
+  ylim(-60,60)+
+  xlim(-120,120)+
+  xlab(paste0("PC1 (",100*round(var_explained[1],2),"%)"))+
+  ylab(paste0("PC4 (",100*round(var_explained[4],2),"%)")) -> pca_plot
+
+pca_plot
+
+```
+
+
+
 ## Correlation analysis
 
 ### Between transcriptomes
@@ -2096,8 +2242,9 @@ npc_esc_wilcox_df %>%
 
 ```
 
-I can't seem to get WebGestaltR to work properly, keeps erroring out.
-So instead I am doing ORA with up & down regulated genes.
+## GSEA 
+
+I managed to get GSEA working with `fgsea`, note that I am matching genes by symbol. 
 
 ```{r gsea_diff_genes}
 #| warning: false
@@ -2120,6 +2267,64 @@ gsea_deg_npc_esc <- WebGestaltR::WebGestaltR(enrichMethod = "GSEA",
                                                             "network_CORUM"), 
                                          isOutput = TRUE,
                                          topThr=100)
+
+```
+
+```{r fgsea_degenes}
+#| warning: false 
+#| message: false
+
+ranked_list <- npc_esc_wilcox_df |> 
+  left_join(all.genes) |> 
+  select(mgi_symbol, log2foldchange) |> 
+  deframe()
+  
+hallmark_genes <- msigdbr(species = "mouse", category = "H")
+hallmark_genes <- split(x = hallmark_genes$gene_symbol, f =hallmark_genes$gs_name)
+curated_genes <- msigdbr(species = "mouse", category = "C2", subcategory = "CP")
+curated_genes <- split(x = curated_genes$gene_symbol, f =curated_genes$gs_name)
+ontology_genes <- msigdbr(species = "mouse", category = "C5")
+ontology_genes <- split(x = ontology_genes$gene_symbol, f =ontology_genes$gs_name)
+
+hallmark_res <- fgsea( pathways = hallmark_genes,
+                       stats = ranked_list,
+                       # minSize = 15,
+                       # maxSize = 500,
+                       nperm = 10000)
+
+
+curated_res <- fgsea( pathways = curated_genes,
+                       stats = ranked_list,
+                       # minSize = 15,
+                       # maxSize = 500,
+                       nperm = 10000)
+
+ontology_res <- fgsea( pathways = ontology_genes,
+                       stats = ranked_list,
+                       # minSize = 15,
+                       # maxSize = 500,
+                       nperm = 10000)
+```
+
+
+```{r fgsea_results_table}
+#| warning: false
+#| message: false
+
+hallmark_res |> 
+  rbind( curated_res  ) |> 
+  rbind( ontology_res ) |> 
+  filter( padj < 0.01, size < 600, size > 10) |> 
+  select(pathway, NES, padj, size, leadingEdge) |>
+  unnest(leadingEdge) |> 
+  group_by(pathway) |> 
+  mutate( leadingEdge = paste0(leadingEdge, collapse = ",")) |> 
+  #filter( startsWith(pathway, "GOBP_")) |> 
+  distinct() |> 
+  rename("intersection"="leadingEdge") |> 
+  arrange( NES, desc(padj)) |> 
+  mutate_if(is.numeric, formatC, digits = 2) |> 
+  create_dt()
 
 ```
 

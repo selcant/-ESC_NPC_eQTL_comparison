@@ -879,6 +879,19 @@
       ],
       "Hash": "50c838a310445e954bc13f26f26a6ecf"
     },
+    "babelgene": {
+      "Package": "babelgene",
+      "Version": "22.9",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R",
+        "dplyr",
+        "methods",
+        "rlang"
+      ],
+      "Hash": "8288e81d0c2c3272603f6ef394ffa6fd"
+    },
     "backports": {
       "Package": "backports",
       "Version": "1.4.1",
@@ -1541,6 +1554,37 @@
       "Source": "Repository",
       "Repository": "CRAN",
       "Hash": "f7736a18de97dea803bde0a2daaafb27"
+    },
+    "fastmatch": {
+      "Package": "fastmatch",
+      "Version": "1.1-4",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R"
+      ],
+      "Hash": "8c406b7284bbaef08e01c6687367f195"
+    },
+    "fgsea": {
+      "Package": "fgsea",
+      "Version": "1.28.0",
+      "Source": "Bioconductor",
+      "Requirements": [
+        "BH",
+        "BiocParallel",
+        "Matrix",
+        "R",
+        "Rcpp",
+        "cowplot",
+        "data.table",
+        "fastmatch",
+        "ggplot2",
+        "grid",
+        "scales",
+        "stats",
+        "utils"
+      ],
+      "Hash": "b2de43d04c504b819feec692e2b94523"
     },
     "fontawesome": {
       "Package": "fontawesome",
@@ -2514,6 +2558,22 @@
         "vctrs"
       ],
       "Hash": "4f50122dc256b1b6996a4703fecea821"
+    },
+    "msigdbr": {
+      "Package": "msigdbr",
+      "Version": "7.5.1",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R",
+        "babelgene",
+        "dplyr",
+        "magrittr",
+        "rlang",
+        "tibble",
+        "tidyselect"
+      ],
+      "Hash": "2def1d52dfe1044f82e75d25fb5dd2e5"
     },
     "munsell": {
       "Package": "munsell",
