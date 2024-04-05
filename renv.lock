@@ -223,6 +223,16 @@
       ],
       "Hash": "71c2d178d33f9d91999f67dc2d53b747"
     },
+    "FNN": {
+      "Package": "FNN",
+      "Version": "1.1.4",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R"
+      ],
+      "Hash": "eaabdc7938aa3632a28273f53a0d226d"
+    },
     "Formula": {
       "Package": "Formula",
       "Version": "1.2-5",
@@ -461,6 +471,39 @@
       ],
       "Hash": "b765b28387acc8ec9e9c1530713cb19c"
     },
+    "MOFA2": {
+      "Package": "MOFA2",
+      "Version": "1.12.1",
+      "Source": "Bioconductor",
+      "Repository": "Bioconductor 3.18",
+      "Requirements": [
+        "DelayedArray",
+        "HDF5Array",
+        "R",
+        "RColorBrewer",
+        "Rtsne",
+        "basilisk",
+        "corrplot",
+        "cowplot",
+        "dplyr",
+        "forcats",
+        "ggplot2",
+        "ggrepel",
+        "grDevices",
+        "magrittr",
+        "methods",
+        "pheatmap",
+        "reshape2",
+        "reticulate",
+        "rhdf5",
+        "stats",
+        "stringi",
+        "tidyr",
+        "utils",
+        "uwot"
+      ],
+      "Hash": "16ae035f824f3495ae957c6af356787d"
+    },
     "Matrix": {
       "Package": "Matrix",
       "Version": "1.6-5",
@@ -563,6 +606,18 @@
       ],
       "Hash": "5ea2700d21e038ace58269ecdbeb9ec0"
     },
+    "RcppAnnoy": {
+      "Package": "RcppAnnoy",
+      "Version": "0.0.22",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R",
+        "Rcpp",
+        "methods"
+      ],
+      "Hash": "f6baa1e06fb6c3724f601a764266cb0d"
+    },
     "RcppArmadillo": {
       "Package": "RcppArmadillo",
       "Version": "0.12.6.6.1",
@@ -590,6 +645,24 @@
       ],
       "Hash": "acb0a5bf38490f26ab8661b467f4f53a"
     },
+    "RcppProgress": {
+      "Package": "RcppProgress",
+      "Version": "0.4.2",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "1c0aa18b97e6aaa17f93b8b866c0ace5"
+    },
+    "RcppTOML": {
+      "Package": "RcppTOML",
+      "Version": "0.2.2",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R",
+        "Rcpp"
+      ],
+      "Hash": "c232938949fcd8126034419cc529333a"
+    },
     "Rhdf5lib": {
       "Package": "Rhdf5lib",
       "Version": "1.24.1",
@@ -599,6 +672,17 @@
         "R"
       ],
       "Hash": "beaded2ac0f712ae3d8409f5fa470381"
+    },
+    "Rtsne": {
+      "Package": "Rtsne",
+      "Version": "0.17",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "Rcpp",
+        "stats"
+      ],
+      "Hash": "f81f7764a3c3e310b1d40e1a8acee19e"
     },
     "S4Arrays": {
       "Package": "S4Arrays",
@@ -911,6 +995,34 @@
         "R"
       ],
       "Hash": "543776ae6848fde2f48ff3816d0628bc"
+    },
+    "basilisk": {
+      "Package": "basilisk",
+      "Version": "1.14.3",
+      "Source": "Bioconductor",
+      "Repository": "Bioconductor 3.18",
+      "Requirements": [
+        "basilisk.utils",
+        "dir.expiry",
+        "methods",
+        "parallel",
+        "reticulate",
+        "utils"
+      ],
+      "Hash": "7f12a0c0a99c04674711a95eec595d9f"
+    },
+    "basilisk.utils": {
+      "Package": "basilisk.utils",
+      "Version": "1.14.1",
+      "Source": "Bioconductor",
+      "Repository": "Bioconductor 3.18",
+      "Requirements": [
+        "dir.expiry",
+        "methods",
+        "tools",
+        "utils"
+      ],
+      "Hash": "a7a2fef1e703a0e2dd4af666b6de76b1"
     },
     "beachmat": {
       "Package": "beachmat",
@@ -1378,6 +1490,16 @@
       ],
       "Hash": "7ede2ee9ea8d3edbf1ca84c1e333ad1a"
     },
+    "dir.expiry": {
+      "Package": "dir.expiry",
+      "Version": "1.10.0",
+      "Source": "Bioconductor",
+      "Requirements": [
+        "filelock",
+        "utils"
+      ],
+      "Hash": "d4412704cb3bf84c5f03fe2ac03c236f"
+    },
     "doParallel": {
       "Package": "doParallel",
       "Version": "1.0.17",
@@ -1429,6 +1551,19 @@
         "vctrs"
       ],
       "Hash": "fedd9d00c2944ff00a0e2696ccf048ec"
+    },
+    "dqrng": {
+      "Package": "dqrng",
+      "Version": "0.3.2",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "BH",
+        "R",
+        "Rcpp",
+        "sitmo"
+      ],
+      "Hash": "824df2aeba88d701df5e79018b35b815"
     },
     "dtplyr": {
       "Package": "dtplyr",
@@ -1585,6 +1720,16 @@
         "utils"
       ],
       "Hash": "b2de43d04c504b819feec692e2b94523"
+    },
+    "filelock": {
+      "Package": "filelock",
+      "Version": "1.0.3",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R"
+      ],
+      "Hash": "192053c276525c8495ccfd523aa8f2d1"
     },
     "fontawesome": {
       "Package": "fontawesome",
@@ -2850,6 +2995,17 @@
       ],
       "Hash": "ceb5c2a59ba33d42d051285a3e8a5118"
     },
+    "ppcor": {
+      "Package": "ppcor",
+      "Version": "1.1",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "MASS",
+        "R"
+      ],
+      "Hash": "0b26c0c84f22515249dd7915f4214d32"
+    },
     "praise": {
       "Package": "praise",
       "Version": "1.0.0",
@@ -3108,6 +3264,41 @@
       ],
       "Hash": "1425f91b4d5d9a8f25352c44a3d914ed"
     },
+    "reshape2": {
+      "Package": "reshape2",
+      "Version": "1.4.4",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R",
+        "Rcpp",
+        "plyr",
+        "stringr"
+      ],
+      "Hash": "bb5996d0bd962d214a11140d77589917"
+    },
+    "reticulate": {
+      "Package": "reticulate",
+      "Version": "1.35.0",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "Matrix",
+        "R",
+        "Rcpp",
+        "RcppTOML",
+        "graphics",
+        "here",
+        "jsonlite",
+        "methods",
+        "png",
+        "rappdirs",
+        "rlang",
+        "utils",
+        "withr"
+      ],
+      "Hash": "90be16b53b955990db4aa355c03d85eb"
+    },
     "rhdf5": {
       "Package": "rhdf5",
       "Version": "2.46.1",
@@ -3311,6 +3502,17 @@
         "stringr"
       ],
       "Hash": "3838071b66e0c566d55cc26bd6e27bf4"
+    },
+    "sitmo": {
+      "Package": "sitmo",
+      "Version": "2.0.2",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R",
+        "Rcpp"
+      ],
+      "Hash": "c956d93f6768a9789edbc13072b70c78"
     },
     "snow": {
       "Package": "snow",
@@ -3670,6 +3872,23 @@
         "R"
       ],
       "Hash": "303c19bfd970bece872f93a824e323d9"
+    },
+    "uwot": {
+      "Package": "uwot",
+      "Version": "0.1.16",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "FNN",
+        "Matrix",
+        "Rcpp",
+        "RcppAnnoy",
+        "RcppProgress",
+        "dqrng",
+        "irlba",
+        "methods"
+      ],
+      "Hash": "252deaa1c1d6d3da6946694243781ea3"
     },
     "vctrs": {
       "Package": "vctrs",
