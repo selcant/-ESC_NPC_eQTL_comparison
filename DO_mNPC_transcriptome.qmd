@@ -50,14 +50,16 @@ library(GenomicRanges)
 
 # analysis
 library(Hmisc) # rcorr
-library(gprofiler2)
+# library(gprofiler2)
 # set gprofiler version
-set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e107_eg54_p17/")
+# set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15/")
+# set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e107_eg54_p17/")
+library(clusterProfiler)
 library(fgsea)
 library(msigdbr)
 
 library(sva)
-library(WebGestaltR)
+# library(WebGestaltR)
 library(WGCNA)
 library(GSVA)
 library(GO.db)
@@ -731,7 +733,7 @@ V(g)$lfc <- c((pluri_genes_pc1 %>%
   select(mgi_symbol, PC1) %>% 
   distinct())$PC1, rep(NA, length(unique(pluri_genes_pc1$term_name)))) # last two are the category names
 
-ggraph(g)+
+ggraph(g, layout = 'igraph', algorithm = 'kk')+
   geom_edge_link(col="gray", alpha=0.1)+
   geom_node_point(aes(col=lfc),size=5)+
   geom_node_text(aes(label = name), repel = TRUE )+
@@ -766,7 +768,7 @@ V(g)$lfc <- c((spindle_genes_pc1 %>%
   select(mgi_symbol, PC1) %>% 
   distinct())$PC1, rep(NA, length(unique(spindle_genes_pc1$term_name)))) # last two are the category names
 
-ggraph(g)+
+ggraph(g, layout = 'igraph', algorithm = 'kk')+
   geom_edge_link(col="gray", alpha=0.1)+
   geom_node_point(aes(col=lfc),size=5)+
   geom_node_text(aes(label = name), repel = TRUE )+
@@ -1659,40 +1661,66 @@ pc1_drivers_full <- pca_esc_npc$rotation[,"PC1", drop = FALSE] %>%
   left_join( all.genes %>%  
                select(ensembl_gene_id, mgi_symbol)
              ) %>% 
-  #filter( abs(PC1) >= quantile(abs(PC1), 0.95))
-  filter( PC1 >= quantile(PC1, 0.975) |
-          PC1 <= quantile(PC1, 0.025)
-  )
+  filter( abs(PC1) >= quantile(abs(PC1), 0.95))
+  # filter( PC1 >= quantile(PC1, 0.975) |
+  #         PC1 <= quantile(PC1, 0.025)
+  # )
 
-g.pc1_top_full <- gost(
-  query = (pc1_drivers_full |> filter(PC1 >0))$mgi_symbol,
+# g.pc1_top_full <- gost(
+#   query = (pc1_drivers_full |> filter(PC1 >0))$mgi_symbol,
+#   organism = "mmusculus",
+#   domain_scope = "custom",
+#   custom_bg = (all.genes |> filter(ensembl_gene_id %in% shared.genes))$mgi_symbol,
+#   evcodes = TRUE,
+#   correction_method = "fdr"
+# )
+# g.pc1_bottom_full <- gost(
+#   query = (pc1_drivers_full |> filter(PC1 < 0))$mgi_symbol,
+#   organism = "mmusculus",
+#   domain_scope = "custom",
+#   custom_bg =(all.genes |> filter(ensembl_gene_id %in% shared.genes))$mgi_symbol,
+#   evcodes = TRUE,
+#   correction_method = "fdr"
+# )
+# g.pc1_top_full$result <- g.pc1_top_full$result %>% filter(term_size < 660)
+# g.pc1_bottom_full$result <- g.pc1_bottom_full$result %>% filter(term_size < 660)
+
+# Negative loadings:
+# 
+# -   Translation
+# 
+# -   DNA repair
+# 
+# -   Glycolysis
+# 
+# Positive loadings:
+# 
+# -   Neural development
+# 
+# -   Signal transduction including: WNT signaling
+
+g.pc1_full <- gost(
+  query = pc1_drivers_full$mgi_symbol,
   organism = "mmusculus",
   domain_scope = "custom",
   custom_bg = (all.genes |> filter(ensembl_gene_id %in% shared.genes))$mgi_symbol,
   evcodes = TRUE,
   correction_method = "fdr"
 )
-g.pc1_bottom_full <- gost(
-  query = (pc1_drivers_full |> filter(PC1 < 0))$mgi_symbol,
-  organism = "mmusculus",
-  domain_scope = "custom",
-  custom_bg =(all.genes |> filter(ensembl_gene_id %in% shared.genes))$mgi_symbol,
-  evcodes = TRUE,
-  correction_method = "fdr"
-)
-g.pc1_top_full$result <- g.pc1_top_full$result %>% filter(term_size < 660)
-g.pc1_bottom_full$result <- g.pc1_bottom_full$result %>% filter(term_size < 660)
+
+g.pc1_full$result <- g.pc1_full$result %>% filter(term_size < 660)
 
 ```
 
 ```{r ora_pc1_results_full}
-
-g.pc1_top_full$result |> 
-  mutate( type = "Positive PC1 loading") |> 
+#| eval: false
+#
+g.pc1_top_full$result |>
+  mutate( type = "Positive PC1 loading") |>
   rbind(
-    g.pc1_bottom_full$result |> 
+    g.pc1_bottom_full$result |>
       mutate(type = "Negative PC1 loading")
-  ) |> 
+  ) |>
   select( type, term_name, source, FDR = p_value, term_size, intersection_size, intersection) %>% 
   filter( FDR <0.01) %>% 
   mutate_if( is.numeric, formatC, digits =2) %>% 
@@ -1723,19 +1751,177 @@ cor( pca_npc_df |> filter(sampleid %in% shared.samples) |> select(PC1),
 
 ```
 
-Negative loadings:
 
--   Translation
 
--   DNA repair
+```{r pc2_vs_pc3}
+#| fig-height: 4
+#| fig-width: 8
 
--   Glycolysis
+pca_esc_npc$x%>%
+  as_tibble( rownames = "sample") %>%
+  separate(sample, into = c("sampleid","type"),sep = "_type:") |> 
+  left_join(annot_all_expr) %>%
+  mutate(sex = ifelse(sex == "F", "Female", "Male"),type = toupper(type)) %>%
+  ggplot()+
+  aes(
+    x = PC2, 
+    y = PC3, 
+   # shape = sex,
+    color = type
+  )+
+  geom_point(size = 4, alpha = 0.7)+
+  theme_pubclean(base_size = 20)+
+  theme(legend.position = "right")+
+  #color_palette("npg")+
+  scale_color_manual(values = c("ESC"=qtl.colors[["esc_rna"]],
+                                "NPC"= qtl.colors[["npc_rna"]]))+
+  #scale_shape_manual( values = c(3, 20))+
+  ylim(-60,60)+
+  xlim(-120,120)+
+  xlab(paste0("PC2 (",100*round(var_explained[2],2),"%)"))+
+  ylab(paste0("PC3 (",100*round(var_explained[3],2),"%)")) 
 
-Positive loadings:
 
--   Neural development
+```
 
--   Signal transduction including: WNT signaling
+
+```{r pc2_pc3_pra}
+#| warning: false
+#| message: false
+
+
+pc2_drivers <- pca_esc_npc$rotation[,"PC2", drop = FALSE] %>% 
+  as_tibble( rownames = "ensembl_gene_id") %>% 
+  left_join( all.genes %>%  
+               select(ensembl_gene_id, mgi_symbol)
+             ) %>% 
+  filter( abs(PC2) >= quantile(abs(PC2), 0.95))
+
+pc3_drivers <- pca_esc_npc$rotation[,"PC3", drop = FALSE] %>% 
+  as_tibble( rownames = "ensembl_gene_id") %>% 
+  left_join( all.genes %>%  
+               select(ensembl_gene_id, mgi_symbol)
+             ) %>% 
+  filter( abs(PC3) >= quantile(abs(PC3), 0.95))
+
+g.pc2 <- gost(
+  query = (pc2_drivers)$mgi_symbol,
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg = (all.genes |> filter(ensembl_gene_id %in% shared.genes))$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+
+g.pc3 <- gost(
+  query = (pc3_drivers)$mgi_symbol,
+  organism = "mmusculus",
+  domain_scope = "custom",
+  custom_bg =(all.genes |> filter(ensembl_gene_id %in% shared.genes))$mgi_symbol,
+  evcodes = TRUE,
+  correction_method = "fdr"
+)
+
+g.pc2$result <- g.pc2$result %>% filter(term_size < 660)
+g.pc3$result <- g.pc3$result %>% filter(term_size < 660)
+
+# pca_esc_npc$rotation[,"PC4", drop = FALSE] %>% 
+#   as_tibble( rownames = "ensembl_gene_id") %>% 
+#   left_join( all.genes %>%  
+#                select(ensembl_gene_id, mgi_symbol, gene_chr)
+#              ) %>% 
+#   filter( abs(PC4) >= quantile(abs(PC4), 0.95)) |> 
+#   arrange(desc(abs(PC4)))
+#   count(gene_chr)
+
+pc1_tfs <- g.pc1_full$result |> 
+  filter( p_value <0.01, source == "TF") |> 
+  mutate( TF = str_replace(str_replace(str_replace(str_to_upper(str_split_i(str_split_i(term_name, ":",2), ";",1)), pattern = "-", replacement = ""), pattern = ".",replacement = ""), pattern = "," , replacement = "")
+    ) |> 
+  mutate( TF = str_to_title(TF))
+
+pc2_tfs <- g.pc2$result |> 
+  filter( p_value <0.01, source == "TF") |> 
+  mutate( TF = str_replace(str_replace(str_replace(str_to_upper(str_split_i(str_split_i(term_name, ":",2), ";",1)), pattern = "-", replacement = ""), pattern = ".",replacement = ""), pattern = "," , replacement = "")
+    ) |> 
+  mutate( TF = str_to_title(TF))
+
+pc3_tfs <- g.pc3$result |> 
+  filter( p_value <0.01, source == "TF") |> 
+  mutate( TF = str_replace(str_replace(str_replace(str_to_upper(str_split_i(str_split_i(term_name, ":",2), ";",1)), pattern = "-", replacement = ""), pattern = ".",replacement = ""), pattern = "," , replacement = "")
+    ) |> 
+  mutate( TF = str_to_title(TF))
+
+```
+
+```{r pc1_pc2_pc3_ora_table}
+#| warning: false
+#| message: false
+
+g.pc1_full$result |> 
+  mutate( type = "PC1") |> 
+  rbind(
+    g.pc2$result |> 
+      mutate( type = "PC2") 
+  ) |> 
+  rbind(
+    g.pc3$result |> 
+      mutate(type = "PC3")
+  ) |> 
+  select( type, term_name, source, FDR = p_value, term_size, intersection_size, intersection) %>% 
+  filter( FDR <0.01) %>% 
+  mutate_if( is.numeric, formatC, digits =2) %>% 
+  create_dt()
+
+```
+
+
+PC1:
+
+  -   TFs: `r paste( unique(pc1_tfs$TF), collapse = ", ")`
+  
+  -   protein ubiquitination, ubiquitin ligase complex, ubiquitin-protein transferase activity, modification-dependent protein catabolic process, ubiquitin-dependent protein catabolic process, ubiquitin-like protein transferase activity, protein polyubiquitination, Ubiquitin mediated proteolysis
+  
+  -   Nervous system development, Axon guidance, dendritic tree, central nervous system development, presynapse, cell morphogenesis involved in neuron differentiation, postsynapse
+  
+  -   embryonic morphogenesis, chordate embryonic development, embryo development ending in birth or egg hatching
+  
+  -   Signaling:
+  
+    -   Signaling pathways regulating pluripotency of stem cells
+    
+    -   GPCR sigaling: Signaling by GPCR, G alpha (12/13) signalling events, GPCR downstream signalling, adenylate cyclase-modulating G protein-coupled receptor signaling pathway, G protein-coupled receptor signaling pathway
+    
+    -   PI3K/AKT Signaling: Negative regulation of the PI3K/AKT network, PI5P, PP2A and IER3 Regulate PI3K/AKT Signaling, heterotrimeric G-protein complex
+    
+    -   Toll-like receptor signaling pathway
+    
+    -   regulation of MAPK cascade, ERK5 cascade
+  
+  
+PC2:
+
+  -    TFs: `r paste( unique(pc2_tfs$TF), collapse = ", ")`
+
+  -   Cell cycle and more specifically the mitotic assembly checkpoint.
+  
+  -   Cellular respiration.
+  
+  -   Transcription.
+
+
+PC3:
+  
+  -    TFs: `r paste( unique(pc3_tfs$TF), collapse = ", ")`
+
+  -   mRNA processing, splicing.
+  
+  -   glycosphingolipid metabolism.
+  
+  -   chromatin organization.
+
+
+PC4 is mostly driven by genes on sex chromosomes.
 
 ## Correlation analysis
 
@@ -2189,14 +2375,14 @@ gsva_rna_esc_npc %>%
 
 gsva_rna_esc_npc_results %>% 
   group_by( Category) %>% 
-  rstatix::anova_test( Enrichment_Score ~ type+sex+type*sex) %>% 
+  rstatix::anova_test( Enrichment_Score ~ type+sex+lifr_geno) %>% 
   rstatix::adjust_pvalue( method = "BH") %>%
   rstatix::add_significance("p.adj") %>% 
   ungroup() -> gsva_rna_esc_npc_aov
 
 gsva_rna_esc_npc_results %>% 
   group_by(Category) %>% 
-  rstatix::tukey_hsd( Enrichment_Score ~ type+sex+type*sex) %>% 
+  rstatix::tukey_hsd( Enrichment_Score ~ type+sex+lifr_geno) %>% 
   ungroup() %>% 
   as_tibble() %>% 
   left_join( goannot_wdef, by = c("Category" = "GOID")) -> gsva_rna_esc_npc_tukey
@@ -2222,6 +2408,11 @@ gsva_rna_esc_npc_tukey %>%
   rbind(
     gsva_rna_esc_npc_tukey %>%
       filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="type"))$Category, term == "type" )
+    
+  ) %>% 
+    rbind(
+    gsva_rna_esc_npc_tukey %>%
+      filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="lifr_geno"))$Category, term == "lifr_geno" )
     
   ) %>% 
   #   rbind(
@@ -2357,6 +2548,59 @@ figure2_ab
 # ggsave(figure2_ab, filename = here("figures","figure2_ab.svg"), width = 12, height = 4, dpi = 300, units = "in")
 
 ```
+
+### GSVA QTL table
+
+```{r gsva_qtl_scans_esc_npc}
+#| warning: false
+#| message: false
+#| cache: true
+
+# note that I am mapping with the NPC samples from the ESC+NPC combined GSVA results
+gsva_rna_esc_npc_results %>%
+  filter(type =="npc") |> 
+  select(Category, sampleid, Enrichment_Score) %>%
+  pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>%
+  column_to_rownames("sampleid") %>%
+  as.matrix() -> gsva_npc_results_mat
+
+# rankZ
+gsva_npc_results_mat_rankZ <- apply(gsva_npc_results_mat, 2,rankZ )
+
+shared.probs.npc_rna <- probs.npc_rna[ind=shared.samples]
+shared.kinship.npc_rna <- calc_kinship(shared.probs.npc_rna, type = "loco")
+#qtl mapping
+gsva_qtl_npc <- scan1( genoprobs = shared.probs.npc_rna,
+                   pheno = gsva_results_mat_rankZ[],
+                   kinship = shared.kinship.npc_rna,
+                   addcovar = covar.npc_rna[shared.samples,,drop=FALSE])
+#save( gsva_qtl, file = here("_data","GSVA_npc_qtl_scans.RData"))
+
+# load(here("_data","GSVA_npc_qtl_scans.RData"))
+gsva_qtl_npc_peaks <- find_peaks( gsva_qtl_npc, threshold = 7, gmap)
+# add interp_peak_bp, before, after
+gsva_qtl_npc_peaks <- gsva_qtl_npc_peaks %>% 
+  left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% 
+  mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>% 
+  mutate(phenotype=lodcolumn) %>%
+  mutate( peak_chr = chr,
+          peak_cM = pos) %>%
+  interp_bp(.) #add bp location for peaks
+
+```
+
+```{r}
+
+gsva_qtl_npc_peaks %>% 
+  select( GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
+  # filter( GOID %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
+  #                                                          p.adj.signif != "ns" ))$Category ) %>%
+  filter(Lod > 7.5) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  create_dt()
+
+```
+
 :::
 
 # Differential expression analysis
@@ -2750,13 +2994,13 @@ I am using MOFA to integrate the gene expression across the two cell states.
 # It runs really fast!
 # Using:
 # - shared samples
-# - most varaible genes (NPC ~3500, ESC~2200)
-# - 10 factors
+# - all genes
+# - 15 factors
 
 library(MOFA2)
-# mofa_tb <- readRDS("/projects/munger-lab/projects/DO_mNPC/ESC_NPC_eQTL_comparison/_data/do_npc_esc_data_for_mofa.RData")
+mofa_tb <- readRDS("/projects/munger-lab/projects/DO_mNPC/ESC_NPC_eQTL_comparison/_data/do_npc_esc_data_for_mofa.RData")
 
-mofa_tb <- readRDS("/projects/munger-lab/projects/DO_mNPC/ESC_NPC_eQTL_comparison/_data/do_npc_esc_data_for_mofa_var_filtered.RData")
+# mofa_tb <- readRDS("/projects/munger-lab/projects/DO_mNPC/ESC_NPC_eQTL_comparison/_data/do_npc_esc_data_for_mofa_var_filtered.RData")
 
 mofa_obj <- create_mofa(mofa_tb)
 print(mofa_obj)  
@@ -2765,7 +3009,7 @@ data_opts <- get_default_data_options(mofa_obj)
 head(data_opts)
 
 model_opts <- get_default_model_options(mofa_obj)
-model_opts$num_factors <- 10
+model_opts$num_factors <- 15
 head(model_opts)
 
 train_opts <- get_default_training_options(mofa_obj)
@@ -2783,7 +3027,7 @@ MOFAobject <- prepare_mofa(
   training_options = train_opts
 )
 
-outfile = ("/projects/munger-lab/projects/DO_mNPC/ESC_NPC_eQTL_comparison/_data/do_npc_esc_shared_genes_model.hdf5")
+outfile = ("/projects/munger-lab/projects/DO_mNPC/ESC_NPC_eQTL_comparison/_data/do_npc_esc_shared_samples_all_genes_model.hdf5")
 MOFAobject.trained <- run_mofa(MOFAobject, outfile, use_basilisk=TRUE)
 
 ```
@@ -2792,7 +3036,7 @@ MOFAobject.trained <- run_mofa(MOFAobject, outfile, use_basilisk=TRUE)
 #| eval: true
 
 library(MOFA2)
-model <- load_model(here("_data","do_npc_esc_shared_genes_model.hdf5"))
+model <- load_model(here("_data","do_npc_esc_shared_samples_all_genes_model.hdf5"))
 
 plot_data_overview(model)
 
