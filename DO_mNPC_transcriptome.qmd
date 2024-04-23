@@ -50,11 +50,13 @@ library(GenomicRanges)
 
 # analysis
 library(Hmisc) # rcorr
-# library(gprofiler2)
+library(gprofiler2)
 # set gprofiler version
+# set_base_url("https://biit.cs.ut.ee/gprofiler")
 # set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15/")
 # set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e107_eg54_p17/")
-library(clusterProfiler)
+# library(clusterProfiler)
+library(simplifyEnrichment)
 library(fgsea)
 library(msigdbr)
 
@@ -550,6 +552,18 @@ pc1_drivers <- pca.npc$rotation[,"PC1", drop = FALSE] %>%
   #         PC1 <= quantile(PC1, 0.025)
   # )
 
+# ora_pc1_go <- enrichGO( gene = pc1_drivers$mgi_symbol,
+#                         OrgDb = 'org.Mm.eg.db',
+#                         keyType = "SYMBOL",
+#                         pvalueCutoff = 0.05, # default 0.05
+#                         pAdjustMethod = "BH", # default BH
+#                         universe = npc.genes$mgi_symbol,
+#                         minGSSize = 10, # default 10
+#                         maxGSSize = 500, # default 500
+#                         ont = "ALL",
+#                         readable = TRUE
+#                         )
+
 g.pc1 <- gost(
   query = (pc1_drivers)$mgi_symbol,
   organism = "mmusculus",
@@ -560,6 +574,11 @@ g.pc1 <- gost(
 )
 g.pc1$result <- g.pc1$result %>% filter(term_size < 660)
 
+pc1_tfs <- g.pc1$result |> 
+  filter( p_value <0.01, source == "TF") |> 
+  mutate( TF = str_replace(str_replace(str_replace(str_to_upper(str_split_i(str_split_i(term_name, ":",2), ";",1)), pattern = "-", replacement = ""), pattern = ".",replacement = ""), pattern = "," , replacement = "")
+    ) |> 
+  mutate( TF = str_to_title(TF))
 
 # g.pc1_top <- gost(
 #   query = (pc1_drivers |> filter(PC1 >0))$mgi_symbol,
@@ -599,21 +618,30 @@ g.pc1$result |>
 
 ```
 
+Let's try simplifying the GO BP terms:
+```{r npc_pc1_go_bp}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 8
+
+simplifyGO( mat = GO_similarity( (g.pc1$result |> filter( source =="GO:BP", p_value < 0.05))$term_id, ont = "BP"))
+
+```
+
 PC1 drivers are over-represented for:
 
--   Cell cycle.
+-   Cell cycle. More specifically the "Mitotic Metaphase and Anaphase", the spindle assembly checkpoint and related processes.
 
-    -   More specifically the "Mitotic Metaphase and Anaphase", the spindle assembly checkpoint and related processes.
+-   DNA replication and repair.
 
-    -   DNA replication and repair.
-
-    -   RNA splicing.
+-   RNA splicing.
 
 -   Pluripotency regulation and related processes such as: "response to leukemia inhibitory factor".
 
 -   Translation: ribosome biogenesis, translation initation.
 
--   TF motifs: ATF3, NRF2, ZFP768, OTX2, PITX1, PITX2, c-MYC, MXI1, E4BP4, HFH8, PITX3, ZFP536, SAP1A, ARNT.
+-   TF motifs: `r paste( unique(pc1_tfs$TF), collapse = ", ")`
 
 -   Genes located in:
 
@@ -906,7 +934,7 @@ ORA results with most variable (highest .05% CV) genes in mNPCs (FDR \<0.01):
 ```{r ora_most_var}
 
 g.high.var$result %>% 
-  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size, intersection) %>% 
   filter( FDR <0.01) %>% 
   mutate_if( is.numeric, formatC, digits =2) %>% 
   create_dt()
@@ -933,10 +961,34 @@ spindle_genes_low_var <- g.low.var$result %>%
   left_join(npc.genes)
 
 g.low.var$result %>% 
-  select( term_name, source, FDR = p_value, term_size, intersection_size) %>% 
+  select( term_name, source, FDR = p_value, term_size, intersection_size, intersection) %>% 
   filter( FDR <0.01) %>% 
   mutate_if( is.numeric, formatC, digits =2) %>% 
   create_dt()
+
+```
+
+Let's simplify the GO BP terms from the two lists.
+```{r npc_pc1_go_bp}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 8
+
+high_low_var_go_bp <- list(
+  high_var = (g.high.var$result |> 
+                filter( source == "GO:BP",
+                        p_value < 0.05)),
+  low_var = ((g.high.var$result |> 
+                filter( source == "GO:BP",
+                        p_value < 0.05)))
+)
+simplifyGOFromMultipleLists( lt = high_low_var_go_bp,  
+                             go_id_column = "term_id",
+                             padj_column = "p_value",
+                             padj_cutoff = 0.05, 
+                             ont = "BP")
+
 
 ```
 
