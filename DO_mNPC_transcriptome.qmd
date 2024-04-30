@@ -625,7 +625,10 @@ Let's try simplifying the GO BP terms:
 #| fig-width: 16
 #| fig-height: 8
 
-simplifyGO( mat = GO_similarity( (g.pc1$result |> filter( source =="GO:BP", p_value < 0.05))$term_id, ont = "BP"))
+simplifyGO( mat = GO_similarity( (g.pc1$result |> 
+                                    filter( source =="GO:BP", p_value < 0.05))$term_id, 
+                                 ont = "BP", 
+                                 db = 'org.Mm.eg.db'))
 
 ```
 
@@ -969,7 +972,7 @@ g.low.var$result %>%
 ```
 
 Let's simplify the GO BP terms from the two lists.
-```{r npc_pc1_go_bp}
+```{r npc_var_go_bp}
 #| warning: false
 #| message: false
 #| fig-width: 16
@@ -979,7 +982,7 @@ high_low_var_go_bp <- list(
   high_var = (g.high.var$result |> 
                 filter( source == "GO:BP",
                         p_value < 0.05)),
-  low_var = ((g.high.var$result |> 
+  low_var = ((g.low.var$result |> 
                 filter( source == "GO:BP",
                         p_value < 0.05)))
 )
@@ -987,6 +990,7 @@ simplifyGOFromMultipleLists( lt = high_low_var_go_bp,
                              go_id_column = "term_id",
                              padj_column = "p_value",
                              padj_cutoff = 0.05, 
+                             db = 'org.Mm.eg.db',
                              ont = "BP")
 
 
@@ -1085,6 +1089,21 @@ npc_sex_ora <- gost(query = sex_eff_genes$mgi_symbol,
 npc_sex_ora$result <- npc_sex_ora$result %>% filter(term_size <500)
 
 ```
+
+Let's try simplifying the GO BP terms:
+```{r npc_sex_go_bp}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 8
+
+simplifyGO( mat = GO_similarity( (npc_sex_ora$result |> 
+                                    filter( source =="GO:BP", p_value < 0.05))$term_id, 
+                                 db = 'org.Mm.eg.db',
+                                 ont = "BP"))
+
+```
+
 
 ```{r sac_related_genes_table}
 
@@ -1927,6 +1946,33 @@ g.pc1_full$result |>
 
 ```
 
+Let's simplify the GO BP terms from the three PC lists.
+```{r esc_npc_pc123_go_bp}
+#| warning: false
+#| message: false
+#| fig-width: 21
+#| fig-height: 8
+
+combined_pca_go_bp <- list(
+  PC1 = (g.pc1_full$result |> 
+                filter( source == "GO:BP",
+                        p_value < 0.05)),
+  PC2 = (g.pc2$result |> 
+                filter( source == "GO:BP",
+                        p_value < 0.05)),
+  PC3 = (g.pc3$result |> 
+                filter( source == "GO:BP",
+                        p_value < 0.05))
+)
+simplifyGOFromMultipleLists( lt = combined_pca_go_bp,  
+                             go_id_column = "term_id",
+                             padj_column = "p_value",
+                             padj_cutoff = 0.05, 
+                             db = 'org.Mm.eg.db',
+                             ont = "BP")
+
+
+```
 
 PC1:
 
@@ -2351,6 +2397,31 @@ esc_specific_ora$result %>%
 
 ```
 
+Let's simplify the GO BP terms from the two unique gene lists:
+```{r esc_npc_uniq_go_bp}
+#| warning: false
+#| message: false
+#| fig-width: 21
+#| fig-height: 8
+
+esc_npc_uniq_go_bp <- list(
+  ESC = (esc_specific_ora$result |> 
+                filter( source == "GO:BP",
+                        p_value < 0.05)),
+  NPC = (npc_specific_ora$result |> 
+                filter( source == "GO:BP",
+                        p_value < 0.05))
+)
+simplifyGOFromMultipleLists( lt = esc_npc_uniq_go_bp,  
+                             go_id_column = "term_id",
+                             padj_column = "p_value",
+                             padj_cutoff = 0.05, 
+                             db = 'org.Mm.eg.db',
+                             ont = "BP")
+
+
+```
+
 ## Gene Set Variation Analysis of combined ESC-NPC Data set
 
 ```{r esc_npc_rna_gsva}
@@ -2483,6 +2554,30 @@ gsva_rna_esc_npc_tukey %>%
 
 ```
 
+Let's simplify the GO BP terms across effects:
+```{r esc_npc_gsva_go_bp}
+#| warning: false
+#| message: false
+#| fig-width: 21
+#| fig-height: 8
+#| eval: true
+
+gsva_esc_npc_go_bp <- list(
+  Sex = unique((signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="sex"))$Category),
+  Cell_state = unique((signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="type"))$Category),
+  Lifr_geno =  unique((signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="lifr_geno"))$Category)
+) 
+simplifyGOFromMultipleLists( lt = gsva_esc_npc_go_bp, 
+                             db = 'org.Mm.eg.db',
+                             ont = "BP"
+                             )
+
+
+
+
+
+```
+
 Examples:
 
 ```{r gsva_examples_esc_npc}
@@ -2520,7 +2615,8 @@ gsva_rna_esc_npc_results %>%
   stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0007417", term == "type"),
                       label = "{p.adj.signif}",
                       y.position = 0.85)+
-  color_palette("jco")+
+  #color_palette("jco")+
+  scale_color_manual(values = c(esc=qtl.colors[["esc_rna"]], npc = qtl.colors[["npc_rna"]] ) )+
   ylab("Enrichment Score")+
   ggtitle("Central nervous system development")+
   xlab("")+
@@ -2544,7 +2640,8 @@ gsva_rna_esc_npc_results %>%
   stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0006094", term == "type"),
                       label = "{p.adj.signif}",
                       y.position = 0.85)+
-  color_palette("jco")+
+  # color_palette("jco")+
+  scale_color_manual(values = c(esc=qtl.colors[["esc_rna"]], npc = qtl.colors[["npc_rna"]] ) )+
   ylab("Enrichment Score")+
   ggtitle("Gluconeogenesis")+
   xlab("")+
@@ -2568,7 +2665,8 @@ gsva_rna_esc_npc_results %>%
   stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0006412", term == "type"),
                       label = "{p.adj.signif}",
                       y.position = 0.85)+
-  color_palette("jco")+
+  #color_palette("jco")+
+  scale_color_manual(values = c(esc=qtl.colors[["esc_rna"]], npc = qtl.colors[["npc_rna"]] ) )+
   ylab("Enrichment Score")+
   ggtitle("Translation")+
   xlab("")+
@@ -2623,12 +2721,11 @@ shared.probs.npc_rna <- probs.npc_rna[ind=shared.samples]
 shared.kinship.npc_rna <- calc_kinship(shared.probs.npc_rna, type = "loco")
 #qtl mapping
 gsva_qtl_npc <- scan1( genoprobs = shared.probs.npc_rna,
-                   pheno = gsva_results_mat_rankZ[],
+                   pheno = gsva_npc_results_mat_rankZ,
                    kinship = shared.kinship.npc_rna,
                    addcovar = covar.npc_rna[shared.samples,,drop=FALSE])
-#save( gsva_qtl, file = here("_data","GSVA_npc_qtl_scans.RData"))
 
-# load(here("_data","GSVA_npc_qtl_scans.RData"))
+
 gsva_qtl_npc_peaks <- find_peaks( gsva_qtl_npc, threshold = 7, gmap)
 # add interp_peak_bp, before, after
 gsva_qtl_npc_peaks <- gsva_qtl_npc_peaks %>% 
@@ -2641,15 +2738,70 @@ gsva_qtl_npc_peaks <- gsva_qtl_npc_peaks %>%
 
 ```
 
+```{r gsva_qtl_scans_esc}
+#| warning: false
+#| message: false
+#| cache: true
+
+# note that I am mapping with the NPC samples from the ESC+NPC combined GSVA results
+gsva_rna_esc_npc_results %>%
+  filter(type =="esc") |> 
+  select(Category, sampleid, Enrichment_Score) %>%
+  pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>%
+  column_to_rownames("sampleid") %>%
+  as.matrix() -> gsva_esc_results_mat
+
+# rankZ
+gsva_esc_results_mat_rankZ <- apply(gsva_esc_results_mat, 2,rankZ )
+
+shared.probs.esc_rna <- probs.esc_rna[ind=shared.samples]
+shared.kinship.esc_rna <- calc_kinship(shared.probs.esc_rna, type = "loco")
+#qtl mapping
+gsva_qtl_esc <- scan1( genoprobs = shared.probs.esc_rna,
+                   pheno = gsva_esc_results_mat_rankZ,
+                   kinship = shared.kinship.esc_rna,
+                   addcovar = covar.esc_rna[shared.samples,,drop=FALSE])
+
+gsva_qtl_esc_peaks <- find_peaks( gsva_qtl_esc, threshold = 7, gmap)
+# add interp_peak_bp, before, after
+gsva_qtl_esc_peaks <- gsva_qtl_esc_peaks %>% 
+  left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% 
+  mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>% 
+  mutate(phenotype=lodcolumn) %>%
+  mutate( peak_chr = chr,
+          peak_cM = pos) %>%
+  interp_bp(.) #add bp location for peaks
+
+```
+
 ```{r}
 
 gsva_qtl_npc_peaks %>% 
-  select( GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
+  mutate(type = "NPC") |> 
+  rbind(
+    gsva_qtl_esc_peaks |> 
+      mutate( type ="ESC") 
+  ) |> 
+  select( type, GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
   # filter( GOID %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
   #                                                          p.adj.signif != "ns" ))$Category ) %>%
   filter(Lod > 7.5) %>% 
   mutate_if(is.numeric, round, 2) %>% 
   create_dt()
+
+```
+
+```{r closer_look_at_gsva_results_combined}
+#| warning: false
+#| message: false
+
+gsva_qtl_highlight_npc <- gsva_qtl_npc_peaks %>% 
+  filter(
+    (chr == 1 & between(interp_bp_peak, 104e06, 113e06)) |
+    (chr == 10 & between(interp_bp_peak, 33e06, 40e06) ) |
+    (chr == 11 & between(interp_bp_peak, 107e06, 111e06) )
+  ) %>% 
+  filter(lod > 8)
 
 ```
 
@@ -2768,6 +2920,7 @@ hallmark_genes <- split(x = hallmark_genes$gene_symbol, f =hallmark_genes$gs_nam
 curated_genes <- msigdbr(species = "mouse", category = "C2", subcategory = "CP")
 curated_genes <- split(x = curated_genes$gene_symbol, f =curated_genes$gs_name)
 ontology_genes <- msigdbr(species = "mouse", category = "C5")
+ontology_ids <- ontology_genes |> select(gs_name, gs_exact_source)
 ontology_genes <- split(x = ontology_genes$gene_symbol, f =ontology_genes$gs_name)
 
 hallmark_res <- fgsea( pathways = hallmark_genes,
@@ -2808,6 +2961,24 @@ hallmark_res |>
   arrange( NES, desc(padj)) |> 
   mutate_if(is.numeric, formatC, digits = 2) |> 
   create_dt()
+
+```
+
+Let's simplify the GO terms, the others don't return that many:
+```{r esc_npc_degenes_simplifygo}
+#| warning: false
+#| message: false
+#| fig-width: 16
+#| fig-height: 8
+
+degenes_goids <- ontology_res |>
+  filter( str_detect(pathway, "GOBP"), padj < 0.05) |> 
+  left_join( ontology_ids, by = c("pathway"="gs_name"))
+
+simplifyGO( mat = GO_similarity( degenes_goids$gs_exact_source, 
+                                  db = 'org.Mm.eg.db',
+                                 ont = "BP")
+            )
 
 ```
 
