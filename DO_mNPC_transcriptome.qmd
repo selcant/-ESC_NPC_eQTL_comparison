@@ -619,6 +619,7 @@ g.pc1$result |>
 ```
 
 Let's try simplifying the GO BP terms:
+
 ```{r npc_pc1_go_bp}
 #| warning: false
 #| message: false
@@ -634,7 +635,8 @@ simplifyGO( mat = GO_similarity( (g.pc1$result |>
 
 PC1 drivers are over-represented for:
 
--   Cell cycle. More specifically the "Mitotic Metaphase and Anaphase", the spindle assembly checkpoint and related processes.
+-   Cell cycle.
+    More specifically the "Mitotic Metaphase and Anaphase", the spindle assembly checkpoint and related processes.
 
 -   DNA replication and repair.
 
@@ -655,11 +657,10 @@ PC1 drivers are over-represented for:
     -   spindle.
 
     -   replication fork.
-    
+
     -   proteasome.
-    
+
     -   golgi.
-    
 
 Looking at the genes identified as part of some of the categories above.
 
@@ -972,6 +973,7 @@ g.low.var$result %>%
 ```
 
 Let's simplify the GO BP terms from the two lists.
+
 ```{r npc_var_go_bp}
 #| warning: false
 #| message: false
@@ -1091,6 +1093,7 @@ npc_sex_ora$result <- npc_sex_ora$result %>% filter(term_size <500)
 ```
 
 Let's try simplifying the GO BP terms:
+
 ```{r npc_sex_go_bp}
 #| warning: false
 #| message: false
@@ -1103,7 +1106,6 @@ simplifyGO( mat = GO_similarity( (npc_sex_ora$result |>
                                  ont = "BP"))
 
 ```
-
 
 ```{r sac_related_genes_table}
 
@@ -1536,7 +1538,6 @@ ggarrange(var_plot, sd_plot, cv_plot, nrow = 1, common.legend = T)
 
 ```
 
-
 Looking at the abs(log2foldchange) between pairs of samples within ESCs vs NPCs as a measure of variation (?).
 
 ```{r}
@@ -1614,7 +1615,6 @@ npc_cor_df |>
 
 
 ```
-
 
 ## Principal component analysis
 
@@ -1822,8 +1822,6 @@ cor( pca_npc_df |> filter(sampleid %in% shared.samples) |> select(PC1),
 
 ```
 
-
-
 ```{r pc2_vs_pc3}
 #| fig-height: 4
 #| fig-width: 8
@@ -1854,7 +1852,6 @@ pca_esc_npc$x%>%
 
 
 ```
-
 
 ```{r pc2_pc3_pra}
 #| warning: false
@@ -1947,6 +1944,7 @@ g.pc1_full$result |>
 ```
 
 Let's simplify the GO BP terms from the three PC lists.
+
 ```{r esc_npc_pc123_go_bp}
 #| warning: false
 #| message: false
@@ -1976,48 +1974,44 @@ simplifyGOFromMultipleLists( lt = combined_pca_go_bp,
 
 PC1:
 
-  -   TFs: `r paste( unique(pc1_tfs$TF), collapse = ", ")`
-  
-  -   protein ubiquitination, ubiquitin ligase complex, ubiquitin-protein transferase activity, modification-dependent protein catabolic process, ubiquitin-dependent protein catabolic process, ubiquitin-like protein transferase activity, protein polyubiquitination, Ubiquitin mediated proteolysis
-  
-  -   Nervous system development, Axon guidance, dendritic tree, central nervous system development, presynapse, cell morphogenesis involved in neuron differentiation, postsynapse
-  
-  -   embryonic morphogenesis, chordate embryonic development, embryo development ending in birth or egg hatching
-  
-  -   Signaling:
-  
+-   TFs: `r paste( unique(pc1_tfs$TF), collapse = ", ")`
+
+-   protein ubiquitination, ubiquitin ligase complex, ubiquitin-protein transferase activity, modification-dependent protein catabolic process, ubiquitin-dependent protein catabolic process, ubiquitin-like protein transferase activity, protein polyubiquitination, Ubiquitin mediated proteolysis
+
+-   Nervous system development, Axon guidance, dendritic tree, central nervous system development, presynapse, cell morphogenesis involved in neuron differentiation, postsynapse
+
+-   embryonic morphogenesis, chordate embryonic development, embryo development ending in birth or egg hatching
+
+-   Signaling:
+
     -   Signaling pathways regulating pluripotency of stem cells
-    
+
     -   GPCR sigaling: Signaling by GPCR, G alpha (12/13) signalling events, GPCR downstream signalling, adenylate cyclase-modulating G protein-coupled receptor signaling pathway, G protein-coupled receptor signaling pathway
-    
+
     -   PI3K/AKT Signaling: Negative regulation of the PI3K/AKT network, PI5P, PP2A and IER3 Regulate PI3K/AKT Signaling, heterotrimeric G-protein complex
-    
+
     -   Toll-like receptor signaling pathway
-    
+
     -   regulation of MAPK cascade, ERK5 cascade
-  
-  
+
 PC2:
 
-  -    TFs: `r paste( unique(pc2_tfs$TF), collapse = ", ")`
+-   TFs: `r paste( unique(pc2_tfs$TF), collapse = ", ")`
 
-  -   Cell cycle and more specifically the mitotic assembly checkpoint.
-  
-  -   Cellular respiration.
-  
-  -   Transcription.
+-   Cell cycle and more specifically the mitotic assembly checkpoint.
+
+-   Mitochondrial functions like: cellular respiration, TCA cycle.
 
 
 PC3:
-  
-  -    TFs: `r paste( unique(pc3_tfs$TF), collapse = ", ")`
 
-  -   mRNA processing, splicing.
-  
-  -   glycosphingolipid metabolism.
-  
-  -   chromatin organization.
+-   TFs: `r paste( unique(pc3_tfs$TF), collapse = ", ")`
 
+-   mRNA processing, splicing.
+
+-   glycolipid metabolism.
+
+-   chromatin organization.
 
 PC4 is mostly driven by genes on sex chromosomes.
 
@@ -2398,6 +2392,7 @@ esc_specific_ora$result %>%
 ```
 
 Let's simplify the GO BP terms from the two unique gene lists:
+
 ```{r esc_npc_uniq_go_bp}
 #| warning: false
 #| message: false
@@ -2555,6 +2550,7 @@ gsva_rna_esc_npc_tukey %>%
 ```
 
 Let's simplify the GO BP terms across effects:
+
 ```{r esc_npc_gsva_go_bp}
 #| warning: false
 #| message: false
@@ -2794,14 +2790,22 @@ gsva_qtl_npc_peaks %>%
 ```{r closer_look_at_gsva_results_combined}
 #| warning: false
 #| message: false
+#| eval: false
 
-gsva_qtl_highlight_npc <- gsva_qtl_npc_peaks %>% 
+gsva_qtl_npc_peaks %>% 
+  mutate(type = "NPC") |> 
+  rbind(
+    gsva_qtl_esc_peaks |> 
+      mutate( type ="ESC") 
+  ) |> 
+  select( type, GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
   filter(
-    (chr == 1 & between(interp_bp_peak, 104e06, 113e06)) |
-    (chr == 10 & between(interp_bp_peak, 33e06, 40e06) ) |
-    (chr == 11 & between(interp_bp_peak, 107e06, 111e06) )
+    (peak_chr == 1 & between(peak_bp, 104e06, 113e06)) |
+    (peak_chr == 10 & between(peak_bp, 33e06, 40e06) ) |
+    (peak_chr == 11 & between(peak_bp, 107e06, 111e06) )
   ) %>% 
-  filter(lod > 8)
+  filter(Lod > 7) |> 
+  create_dt()
 
 ```
 
@@ -2965,6 +2969,7 @@ hallmark_res |>
 ```
 
 Let's simplify the GO terms, the others don't return that many:
+
 ```{r esc_npc_degenes_simplifygo}
 #| warning: false
 #| message: false
@@ -2989,7 +2994,7 @@ Summary:
     -   Ribosome biogenesis.
 
     -   Response to Lif.
- 
+
     -   DNA repair.
 
 -   NES \> 0:
@@ -3298,8 +3303,3 @@ weights <- get_weights(model, views = "all", factors = "all", as.data.frame = T)
 
 
 ```
-
-
-
-
-
