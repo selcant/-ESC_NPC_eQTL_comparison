@@ -1317,7 +1317,6 @@ g.unique.dist$result %>%
 ```
 
 There are more than `r floor(length(unique(tfs$tf))/100)*100` TFs overrepresented with around 150 of them expressed in NPCs.
-Only 23 have eQTLs in NPCs as listed below.
 
 ```{r tf_motifs_dist_eqtl}
 #| warning: false
@@ -1334,15 +1333,40 @@ unique_npc_distant_eqtl_TFs <- g.unique.dist$result %>%
   mutate( TF = str_to_title(TF)) %>% 
   select(TF, intersection, intersection_size, term_size, term_name, term_id, p_value)
 
+unique_npc_distant_eqtl_TFs_targets <- unique_npc_distant_eqtl_TFs |> 
+  separate_longer_delim(cols = intersection, delim = ",") |> 
+  select(TF, target = intersection) |> 
+  distinct()
 
-peaks.npc_rna.wesc.overlap %>% 
+tf_peaks <- peaks.npc_rna.wesc.overlap %>% 
   filter(mgi_symbol %in% unique_npc_distant_eqtl_TFs$TF,
-         lod.npc_rna >=7.5 | lod.esc_rna >= 7.5) %>% 
-  select( ensembl_gene_id, mgi_symbol, peak_chr, gene_chr,match, lod.npc_rna, lod.esc_rna, interp_bp_peak.npc_rna, interp_bp_peak.esc_rna, local.npc_rna, local.esc_rna) %>% 
-  mutate_if( is.numeric, round, 2) %>% 
-  create_dt()
-   
+         lod.npc_rna >=7 ) %>% 
+  select( ensembl_gene_id, mgi_symbol, peak_chr, gene_chr,match, lod.npc_rna, lod.esc_rna, interp_bp_peak.npc_rna, interp_bp_peak.esc_rna, local.npc_rna, local.esc_rna) 
 
+target_peaks <- peaks.npc_rna.wesc.overlap %>% 
+    filter(mgi_symbol %in% unique_npc_distant_eqtl_TFs_targets$target,
+         lod.npc_rna >=7 ) %>% 
+    select( ensembl_gene_id, mgi_symbol, peak_chr, gene_chr,match, lod.npc_rna, lod.esc_rna, interp_bp_peak.npc_rna, interp_bp_peak.esc_rna, local.npc_rna, local.esc_rna) 
+
+tf_peaks |> 
+  inner_join( target_peaks, by = c("peak_chr"), suffix = c(".tf",".target")) |> 
+  inner_join( unique_npc_distant_eqtl_TFs_targets, by =c("mgi_symbol.tf"="TF", "mgi_symbol.target"="target")) |> 
+  select(TF = mgi_symbol.tf, 
+         Target = mgi_symbol.target, 
+         TF_chr = gene_chr.tf , 
+         Target_chr = gene_chr.target, 
+         qtl_chr= peak_chr, 
+         TF_lod = lod.npc_rna.tf,
+         Target_lod = lod.npc_rna.target, 
+         TF_qtl_pos = interp_bp_peak.npc_rna.tf, 
+         Target_qtl_pos = interp_bp_peak.npc_rna.target) |> 
+  filter( abs(TF_qtl_pos-Target_qtl_pos)<10e6,
+          Target_lod >= 7) |> 
+  mutate( TF_chr = as.factor(TF_chr), Target_chr = as.factor(Target_chr)) |> 
+  mutate_if(is.numeric , round, 2) |> 
+  create_dt()
+  
+ 
 ```
 
 Out of 757 genes with unique distant eQTL in NPCs, 637 of them intersect with TF motif gene sets in total. The range for the total number of genes identified in relation to a TF varies between 34 and 626, and the number of TFs a gene has been identified in relation to ranges between 134 and 241 suggesting significant overlap across the TF motif gene sets. I added a section under mediation results to highlight the TFs mediating some of the unique distant eQTL! 
@@ -2182,6 +2206,80 @@ eqtl_npc_rna_meds_distal %>%
 
 
 ```
+
+
+
+```{r get_tf_meds_plots}
+#| eval: false
+
+# Dnm2 mediated by Creb1 
+dnm2_qtl <- scan1( pheno = exprZ.npc_rna[,(all.genes |> filter(mgi_symbol =="Dnm2"))$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+dnm2_qtl_eff <- scan1blup( pheno = exprZ.npc_rna[,(all.genes |> filter(mgi_symbol =="Dnm2"))$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna[,"8"], 
+                    kinship = kinship_loco.npc_rna[[8]],
+                    addcovar = covar.npc_rna)
+
+
+
+creb1_qtl <- scan1( pheno = exprZ.npc_rna[,(all.genes |> filter(mgi_symbol =="Creb1"))$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+creb1_qtl_eff <- scan1blup( pheno = exprZ.npc_rna[,(all.genes |> filter(mgi_symbol =="Creb1"))$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna[,"8"], 
+                    kinship = kinship_loco.npc_rna[[8]],
+                    addcovar = covar.npc_rna)
+dnm2_eqtl <- peaks.npc_rna.wEffs |> 
+  filter(mgi_symbol =="Dnm2", peak_chr == 8)
+creb1_eqtl <- peaks.npc_rna.wEffs |> 
+  filter(mgi_symbol =="Creb1", peak_chr == 8)
+plot_coefCC(dnm2_qtl_eff, pmap, scan1_output = dnm2_qtl, chr = 8, main = "Dnm2")
+plot_coefCC(creb1_qtl_eff, pmap, scan1_output = creb1_qtl, chr = 8, main = "Creb1")
+
+plot_scan1(creb1_qtl, pmap)
+
+# Efna4 mediated by Sox4, 
+efna4_qtl
+sox4_qtl
+efna4_qtl <- scan1( pheno = exprZ.npc_rna[,(all.genes |> filter(mgi_symbol =="Efna4"))$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+efna4_qtl_eff <- scan1blup( pheno = exprZ.npc_rna[,(all.genes |> filter(mgi_symbol =="Efna4"))$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna[,"8"], 
+                    kinship = kinship_loco.npc_rna[[8]],
+                    addcovar = covar.npc_rna)
+
+
+
+sox4_qtl <- scan1( pheno = exprZ.npc_rna[,(all.genes |> filter(mgi_symbol =="Sox4"))$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna, 
+                    kinship = kinship_loco.npc_rna,
+                    addcovar = covar.npc_rna)
+sox4_qtl_eff <- scan1blup( pheno = exprZ.npc_rna[,(all.genes |> filter(mgi_symbol =="Sox4"))$ensembl_gene_id,drop=FALSE], 
+                    genoprobs = probs.npc_rna[,"8"], 
+                    kinship = kinship_loco.npc_rna[[8]],
+                    addcovar = covar.npc_rna)
+dnm2_eqtl <- peaks.npc_rna.wEffs |> 
+  filter(mgi_symbol =="Dnm2", peak_chr == 8)
+creb1_eqtl <- peaks.npc_rna.wEffs |> 
+  filter(mgi_symbol =="Creb1", peak_chr == 8)
+plot_coefCC(dnm2_qtl_eff, pmap, scan1_output = dnm2_qtl, chr = 8, main = "Dnm2")
+plot_coefCC(creb1_qtl_eff, pmap, scan1_output = creb1_qtl, chr = 8, main = "Creb1")
+
+# Glb1+Acat2+Itgb5 mediated by Tef.
+glb1_qtl
+acat2_qtl
+itgb5_qtl
+tef_qtl
+
+```
+
+
+
 
 
 ### eQTL with best mediator NPC rna
