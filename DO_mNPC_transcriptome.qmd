@@ -1718,6 +1718,8 @@ pca_esc_npc$x%>%
   xlab(paste0("PC1 (",100*round(var_explained[1],2),"%)"))+
   ylab(paste0("PC4 (",100*round(var_explained[4],2),"%)")) -> pca_plot
 
+# ggsave(pca_plot, filename = here("figures","figure1c.svg"), width = 8, height = 4, dpi = 300, units = "in")
+
 pca_plot
 
 ```
