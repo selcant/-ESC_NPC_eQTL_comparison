@@ -127,7 +127,7 @@ do_global_mediation <- function(gene.name,p.chr, peak.info, probs, expr.target, 
   }
   
   
-  annot    <- meds %>% mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2)
+  annot    <- meds %>% mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2)
   geno     <- pull_genoprobpos(probs,marker$marker)
 
   med.scan <- mediation.scan(target= target,
@@ -3330,13 +3330,14 @@ chr1_pca <- prcomp(
   center = T, scale. = T  
 )
 
-chr1_pc1_qtl <- scan1(pheno = chr1_pca$x[,"PC1"],
+chr1_pc1_rankZ <- apply(chr1_pca$x[,"PC1", drop =FALSE], 2, rankZ)
+chr1_pc1_qtl <- scan1(pheno = chr1_pc1_rankZ,
                       genoprobs = probs.npc_rna,
                       kinship = kinship_loco.npc_rna,
                       addcovar = covar.npc_rna
 )
                 
-chr1_pc1_qtl_eff <- scan1blup(pheno = chr1_pca$x[,"PC1"],
+chr1_pc1_qtl_eff <- scan1blup(pheno = chr1_pc1_rankZ,
                       genoprobs = probs.npc_rna[,"1"],
                       kinship = kinship_loco.npc_rna[["1"]],
                       addcovar = covar.npc_rna
@@ -3349,28 +3350,28 @@ marker   <- map_dat2 %>% filter(pos_bp == chr1_pc1_peak$pos)
 geno     <- pull_genoprobpos(probs.npc_rna,marker$marker)
 shared_geno <- pull_genoprobpos(shared.probs.npc_rna,marker$marker)
 
-chr1_pc1_med_npc <- mediation.scan(target= chr1_pca$x[,"PC1"],
+chr1_pc1_med_npc <- mediation.scan(target= chr1_pc1_rankZ,
                             mediator = exprZ.npc_rna,
                             annotation = npc.genes %>% 
-                                  mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2),
+                                  mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
                             covar =  covar.npc_rna,
                             qtl.geno = geno, 
                            verbose=FALSE
   ) 
 
-chr1_pc1_med_npc_shared <- mediation.scan(target= chr1_pca$x[shared.samples,"PC1"],
+chr1_pc1_med_npc_shared <- mediation.scan(target= chr1_pc1_rankZ[shared.samples,"PC1"],
                             mediator = exprZ.npc_rna[shared.samples,,drop=FALSE],
                             annotation = npc.genes %>% 
-                                  mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2),
+                                  mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
                             covar =  covar.npc_rna[shared.samples,,drop=FALSE],
                             qtl.geno = shared_geno, 
                            verbose=FALSE
   ) 
 
-chr1_pc1_med_esc <- mediation.scan(target= chr1_pca$x[shared.samples,"PC1"],
+chr1_pc1_med_esc <- mediation.scan(target= chr1_pc1_rankZ[shared.samples,"PC1"],
                             mediator = exprZ.esc_rna[shared.samples,esc.genes$ensembl_gene_id,drop=F],
                             annotation = esc.genes %>% 
-                                  mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2),
+                                  mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
                             covar =  covar.npc_rna[shared.samples,,drop=F],
                             qtl.geno = shared_geno, 
                            verbose=FALSE
@@ -3388,12 +3389,16 @@ chr1_pc1_med <- chr1_pc1_med_npc %>%
   ) |> 
     select(-chr) %>% 
     mutate(target   = "PC1",
-           peak_chr = "1") %>% 
+           peak_chr = "1",
+           qtl_pos = chr1_pc1_peak$pos) %>% 
     left_join(.,all.genes ) %>% 
     rename("mediator"="mgi_symbol") |> 
   mutate( chrom = gene_chr) 
 
-
+# chr1_pc1_med |> 
+#   filter( gene_chr == peak_chr,
+#           abs(pos-qtl_pos)<10e06) |> 
+#   arrange(LOD)
 ```
 
 ```{r chr1_pc1_qtl}
@@ -3484,7 +3489,7 @@ get_pcor_for_meds <- function(x, esc=FALSE, random = FALSE){
     filter( mgi_symbol == x)
   gene <- gene_dets$mgi_symbol
   gene_pcor_table <- tibble(
-    pc1 = chr1_pca$x[rownames(exprZ.npc_rna),"PC1"],
+    pc1 = chr1_pc1_rankZ[rownames(exprZ.npc_rna),"PC1"],
     !!gene := exprZ.npc_rna[rownames(exprZ.npc_rna),gene_dets$ensembl_gene_id],
     sampleid = rownames(exprZ.npc_rna)
     ) |> 
@@ -3494,7 +3499,7 @@ get_pcor_for_meds <- function(x, esc=FALSE, random = FALSE){
   
   if(esc == TRUE){
     gene_pcor_table <- tibble(
-      pc1 = chr1_pca$x[shared.samples,"PC1"],
+      pc1 = chr1_pc1_rankZ[shared.samples,"PC1"],
       !!gene := exprZ.esc_rna[shared.samples,gene_dets$ensembl_gene_id],
       sampleid = shared.samples
       ) |> 
@@ -3617,7 +3622,7 @@ cand_mediators_esc <- esc.genes |>
 pcor_null_results_npc <-c()
 for(gene in cand_mediators_npc$mgi_symbol){
   
-  pcor_null <- get_null_pcor(gene, esc= FALSE, it = 1000)
+  pcor_null <- get_null_pcor(gene, esc= FALSE, it = 10000)
   pcor_null_tb <- pcor_null |> 
     enframe() |> 
     unnest()
@@ -3628,7 +3633,7 @@ for(gene in cand_mediators_npc$mgi_symbol){
 pcor_null_results_esc <- c()
 for(gene in cand_mediators_esc$mgi_symbol){
   
-  pcor_null <- get_null_pcor(gene, esc= TRUE, it = 1000)
+  pcor_null <- get_null_pcor(gene, esc= TRUE, it = 10000)
   pcor_null_tb <- pcor_null |> 
     enframe() |> 
     unnest()
@@ -4259,14 +4264,15 @@ chr10_pca <- prcomp(
   expr.npc_rna[, chr10.npc.eQTL1$ensembl_gene_id, drop = F], 
   center = T, scale. = T  
 )
+chr10_pc1_rankZ <- apply(chr10_pca$x[,"PC1", drop =FALSE], 2, rankZ)
 
-chr10_pc1_qtl <- scan1(pheno = chr10_pca$x[,"PC1"],
+chr10_pc1_qtl <- scan1(pheno = chr10_pc1_rankZ,
                       genoprobs = probs.npc_rna,
                       kinship = kinship_loco.npc_rna,
                       addcovar = covar.npc_rna
 )
                 
-chr10_pc1_qtl_eff <- scan1blup(pheno = chr10_pca$x[,"PC1"],
+chr10_pc1_qtl_eff <- scan1blup(pheno = chr10_pc1_rankZ,
                       genoprobs = probs.npc_rna[,"10"],
                       kinship = kinship_loco.npc_rna[["10"]],
                       addcovar = covar.npc_rna
@@ -4279,28 +4285,28 @@ marker   <- map_dat2 %>% filter(pos_bp == chr10_pc1_peak$pos)
 geno     <- pull_genoprobpos(probs.npc_rna,marker$marker)
 shared_geno <- pull_genoprobpos(shared.probs.npc_rna,marker$marker)
 
-chr10_pc1_med_npc <- mediation.scan(target= chr10_pca$x[,"PC1"],
+chr10_pc1_med_npc <- mediation.scan(target= chr10_pc1_rankZ,
                             mediator = exprZ.npc_rna,
                             annotation = npc.genes %>% 
-                                  mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2),
+                                  mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
                             covar =  covar.npc_rna,
                             qtl.geno = geno, 
                            verbose=FALSE
   ) 
 
-chr10_pc1_med_npc_shared <- mediation.scan(target= chr10_pca$x[shared.samples,"PC1"],
+chr10_pc1_med_npc_shared <- mediation.scan(target= chr10_pc1_rankZ[shared.samples,"PC1"],
                             mediator = exprZ.npc_rna[shared.samples,,drop=FALSE],
                             annotation = npc.genes %>% 
-                                  mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2),
+                                  mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
                             covar =  covar.npc_rna[shared.samples,,drop=FALSE],
                             qtl.geno = shared_geno, 
                            verbose=FALSE
   ) 
 
-chr10_pc1_med_esc <- mediation.scan(target= chr10_pca$x[shared.samples,"PC1"],
+chr10_pc1_med_esc <- mediation.scan(target= chr10_pc1_rankZ[shared.samples,"PC1"],
                             mediator = exprZ.esc_rna[shared.samples,esc.genes$ensembl_gene_id,drop=F],
                             annotation = esc.genes %>% 
-                                  mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2),
+                                  mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
                             covar =  covar.npc_rna[shared.samples,,drop=F],
                             qtl.geno = shared_geno, 
                            verbose=FALSE
@@ -4699,14 +4705,15 @@ chr11_pca <- prcomp(
   expr.npc_rna[, chr11.npc.eQTL1$ensembl_gene_id, drop = F], 
   center = T, scale. = T  
 )
+chr11_pc1_rankZ <- apply(chr11_pca$x[,"PC1", drop =FALSE], 2, rankZ)
 
-chr11_pc1_qtl <- scan1(pheno = chr11_pca$x[,"PC1"],
+chr11_pc1_qtl <- scan1(pheno = chr11_pc1_rankZ,
                       genoprobs = probs.npc_rna,
                       kinship = kinship_loco.npc_rna,
                       addcovar = covar.npc_rna
 )
                 
-chr11_pc1_qtl_eff <- scan1blup(pheno = chr11_pca$x[,"PC1"],
+chr11_pc1_qtl_eff <- scan1blup(pheno = chr11_pc1_rankZ,
                       genoprobs = probs.npc_rna[,"11"],
                       kinship = kinship_loco.npc_rna[["11"]],
                       addcovar = covar.npc_rna
@@ -4719,28 +4726,28 @@ marker   <- map_dat2 %>% filter(pos_bp == chr11_pc1_peak$pos)
 geno     <- pull_genoprobpos(probs.npc_rna,marker$marker)
 shared_geno <- pull_genoprobpos(shared.probs.npc_rna,marker$marker)
 
-chr11_pc1_med_npc <- mediation.scan(target= chr11_pca$x[,"PC1"],
+chr11_pc1_med_npc <- mediation.scan(target= chr11_pc1_rankZ,
                             mediator = exprZ.npc_rna,
                             annotation = npc.genes %>% 
-                                  mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2),
+                                  mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
                             covar =  covar.npc_rna,
                             qtl.geno = geno, 
                            verbose=FALSE
   ) 
 
-chr11_pc1_med_npc_shared <- mediation.scan(target= chr11_pca$x[shared.samples,"PC1"],
+chr11_pc1_med_npc_shared <- mediation.scan(target= chr11_pc1_rankZ[shared.samples,"PC1"],
                             mediator = exprZ.npc_rna[shared.samples,,drop=FALSE],
                             annotation = npc.genes %>% 
-                                  mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2),
+                                  mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
                             covar =  covar.npc_rna[shared.samples,,drop=FALSE],
                             qtl.geno = shared_geno, 
                            verbose=FALSE
   ) 
 
-chr11_pc1_med_esc <- mediation.scan(target= chr11_pca$x[shared.samples,"PC1"],
+chr11_pc1_med_esc <- mediation.scan(target= chr11_pc1_rankZ[shared.samples,"PC1"],
                             mediator = exprZ.esc_rna[shared.samples,esc.genes$ensembl_gene_id,drop=F],
                             annotation = esc.genes %>% 
-                                  mutate(chr=gene_chr,pos=abs(gene_end-gene_start)/2),
+                                  mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
                             covar =  covar.npc_rna[shared.samples,,drop=F],
                             qtl.geno = shared_geno, 
                            verbose=FALSE
