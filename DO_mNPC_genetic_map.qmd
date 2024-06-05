@@ -3395,15 +3395,38 @@ chr1_pc1_med <- chr1_pc1_med_npc %>%
     rename("mediator"="mgi_symbol") |> 
   mutate( chrom = gene_chr) 
 
-# chr1_pc1_med |> 
-#   filter( gene_chr == peak_chr,
-#           abs(pos-qtl_pos)<10e06) |> 
-#   arrange(LOD)
+
 ```
 
 ```{r chr1_pc1_qtl}
     
 plot_coefCC(chr1_pc1_qtl_eff, scan1_output =chr1_pc1_qtl, map = pmap )
+
+```
+
+
+Mediation of PC1 QTL:
+```{r}
+#| warning: false
+#| message: false
+
+
+chr1_pc1_med |>
+  group_by(type) |> 
+  mutate( scaled_LOD = scale(LOD)) |> 
+  ungroup() |> 
+  filter( gene_chr == peak_chr,
+          abs(pos-qtl_pos)<10e06) |>
+  group_by( type) |> 
+  slice_min( LOD, n = 5) |> 
+  select( mediator, 
+          mediator_pos = pos, 
+          qtl_pos, 
+          mediation_lod = LOD, 
+          scaled_LOD) |> 
+  filter( scaled_LOD < -2) |> 
+  mutate_if(is.numeric, round, 2) |> 
+  create_dt()
 
 ```
 
