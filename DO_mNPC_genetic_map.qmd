@@ -685,9 +685,9 @@ npc_eqtl_counts_lod6 %>%
   theme( axis.text.x = element_text(size = 14),
          axis.text.y = element_text(size = 14)) -> trans_band_plot_lod6
 
-npc_eqtl_map_plot <- ggarrange( npc_eqtl_plot, trans_band_plot, trans_band_plot_lod6, nrow = 3, heights = c(0.7, 0.3,0.3))
+npc_eqtl_map_plot <- ggarrange( npc_eqtl_plot, trans_band_plot, nrow = 2, heights = c(0.7, 0.3))
 
-# ggsave(npc_eqtl_map_plot, filename = here("figures","figure3a_v2.pdf"), width = 8, height = 14, dpi = 300, units = "in")
+# ggsave(npc_eqtl_map_plot, filename = here("figures","do_npc_eqtl_map.svg"), width = 8, height = 11, dpi = 300, units = "in")
 npc_eqtl_map_plot
 
 
@@ -1106,7 +1106,7 @@ shared_eqtl_effs_cor_df %>%
 
 
 # plot all + local + distant
-shared_eqtl_effs_cor_df %>% 
+shared_eqtl_eff_plot <- shared_eqtl_effs_cor_df %>% 
   mutate( p_adj = p.adjust(p_val, method = "BH")) %>% 
   mutate(`Significance` =  ifelse(p_adj < 0.1, "FDR < 0.1", "ns")) %>% #count( p_adj <0.1)
   ggplot() +
@@ -1121,7 +1121,10 @@ shared_eqtl_effs_cor_df %>%
   xlim(-1,1)+
   theme(legend.position = "top")
   
-  
+# ggsave(shared_eqtl_eff_plot, filename = here("figures","shared_eqtl_eff_plot.svg"), width = 7, height = 4, units = "in", dpi = 300)
+
+shared_eqtl_eff_plot
+
 
 ```
 
@@ -1517,6 +1520,7 @@ Csnk2a1_effs %>%
                               effect == "G" ~ "PWK",
                               effect == "H" ~ "WSB")) %>% 
   mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>% 
+  mutate( effect = factor(effect, levels = c("WSB","PWK","CAST","NZO","NOD","129","B6","AJ"))) |> 
   ggplot()+
   aes( x = effect,
        y = value, 
@@ -1546,7 +1550,10 @@ Csnk2a1_effs %>%
 #| fig-height: 5
 
 
-ggarrange( Csnk2a1_lod_plot, Csnk2a1_haplotype_plot, widths = c(1, 0.5))
+Csnk2a1_plot <- ggarrange( Csnk2a1_lod_plot, Csnk2a1_haplotype_plot, widths = c(1, 0.5))
+
+Csnk2a1_plot
+# ggsave(Csnk2a1_plot, filename = here("figures","Csnk2a1_plot.svg"), width = 9, height = 4, units = "in", dpi = 300)
 
 ```
 
@@ -1627,6 +1634,7 @@ Dpysl2_effs %>%
                               effect == "G" ~ "PWK",
                               effect == "H" ~ "WSB")) %>% 
   mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>% 
+    mutate( effect = factor(effect, levels = c("WSB","PWK","CAST","NZO","NOD","129","B6","AJ"))) |> 
   ggplot()+
   aes( x = effect,
        y = value, 
@@ -1736,6 +1744,7 @@ Amph_effs %>%
                               effect == "G" ~ "PWK",
                               effect == "H" ~ "WSB")) %>% 
   mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>% 
+    mutate( effect = factor(effect, levels = c("WSB","PWK","CAST","NZO","NOD","129","B6","AJ"))) |> 
   ggplot()+
   aes( x = effect,
        y = value, 
@@ -1764,7 +1773,11 @@ Amph_effs %>%
 #| fig-width: 10
 #| fig-height: 5
 
-ggarrange( Amph_lod_plot, Amph_haplotype_plot, widths = c(1, 0.5))
+amph_plot <- ggarrange( Amph_lod_plot, Amph_haplotype_plot, widths = c(1, 0.5))
+
+amph_plot
+
+# ggsave(amph_plot, filename = here("figures","amph_plot.svg"), width = 9, height = 4, units = "in", dpi = 300)
 
 ```
 
