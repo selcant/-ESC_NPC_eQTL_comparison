@@ -3337,6 +3337,8 @@ p
 
 ```{r chr1_pca_mapping}
 
+load(here("_data","do_mesc_expr_tpm03_06102024.RData"))#expr_tpm03.esc_rna, exprZ_tpm03.esc_rna
+
 # PC1 from chr1 targets
 chr1_pca <- prcomp(
   expr.npc_rna[, chr1.npc.eQTL1$ensembl_gene_id, drop = F], 
@@ -3382,10 +3384,11 @@ chr1_pc1_med_npc_shared <- mediation.scan(target= chr1_pc1_rankZ[shared.samples,
   ) 
 
 chr1_pc1_med_esc <- mediation.scan(target= chr1_pc1_rankZ[shared.samples,"PC1"],
-                            mediator = exprZ.esc_rna[shared.samples,esc.genes$ensembl_gene_id,drop=F],
-                            annotation = esc.genes %>% 
+                            mediator = exprZ_tpm03.esc_rna[shared.samples,intersect(all.genes$ensembl_gene_id, colnames(exprZ_tpm03.esc_rna)),drop=F],
+                            annotation = all.genes %>%
+                                  filter(ensembl_gene_id %in% colnames(exprZ_tpm03.esc_rna)) |> 
                                   mutate(chr=gene_chr,pos=abs(gene_end+gene_start)/2),
-                            covar =  covar.npc_rna[shared.samples,,drop=F],
+                            covar =  covar.esc_rna[shared.samples,,drop=F],
                             qtl.geno = shared_geno, 
                            verbose=FALSE
   ) 
@@ -3524,6 +3527,18 @@ get_pcor_for_meds <- function(x, esc=FALSE, random = FALSE){
   gene_dets <- all.genes |> 
     filter( mgi_symbol == x)
   gene <- gene_dets$mgi_symbol
+  
+  if(esc == TRUE){
+    gene_pcor_table <- tibble(
+      pc1 = chr1_pc1_rankZ[shared.samples,"PC1"],
+      !!gene := exprZ_tpm03.esc_rna[shared.samples,gene_dets$ensembl_gene_id],
+      sampleid = shared.samples
+      ) |> 
+      left_join(
+       geno_at_chr1_tb
+        )
+  }
+  else{
   gene_pcor_table <- tibble(
     pc1 = chr1_pc1_rankZ[rownames(exprZ.npc_rna),"PC1"],
     !!gene := exprZ.npc_rna[rownames(exprZ.npc_rna),gene_dets$ensembl_gene_id],
@@ -3532,17 +3547,8 @@ get_pcor_for_meds <- function(x, esc=FALSE, random = FALSE){
     left_join(
       geno_at_chr1_tb
       )
-  
-  if(esc == TRUE){
-    gene_pcor_table <- tibble(
-      pc1 = chr1_pc1_rankZ[shared.samples,"PC1"],
-      !!gene := exprZ.esc_rna[shared.samples,gene_dets$ensembl_gene_id],
-      sampleid = shared.samples
-      ) |> 
-      left_join(
-       geno_at_chr1_tb
-        )
   }
+  
   
 
   gene_pcor <- pcor(gene_pcor_table |> 
@@ -3582,15 +3588,16 @@ get_null_pcor <- function(gene, esc = FALSE,it = 100){
 cand_mediators_npc <- npc.genes |> 
   filter( 
     gene_chr == 1, 
-    midpoint >= filter( bands.esc.npc.rna,chr==1)$start[1] , 
-    midpoint  <= filter( bands.esc.npc.rna,chr==1)$end[1] 
+    midpoint >= filter( bands.esc.npc.rna,chr==1)$start[1]-10e06, 
+    midpoint  <= filter( bands.esc.npc.rna,chr==1)$end[1]+10e06 
     )
 
-cand_mediators_esc <- esc.genes |> 
+cand_mediators_esc <- all.genes |>
+  filter( ensembl_gene_id %in% colnames(exprZ_tpm03.esc_rna)) |> 
   filter( 
     gene_chr == 1, 
-    midpoint >= filter( bands.esc.npc.rna,chr==1)$start[1] , 
-    midpoint  <= filter( bands.esc.npc.rna,chr==1)$end[1] 
+    midpoint >= filter( bands.esc.npc.rna,chr==1)$start[1]-10e06 , 
+    midpoint  <= filter( bands.esc.npc.rna,chr==1)$end[1]+10e06 
     )
 
 pcor_results_npc <-c()
@@ -3632,7 +3639,8 @@ pcor_results_merged <- pcor_results_npc |>
 # rnf152_pcor <- get_pcor_for_meds(x = "Rnf152")
 # pign_pcor <- get_pcor_for_meds(x = "Pign")
 # pign_esc_pcor <- get_pcor_for_meds(x = "Pign", esc=T)
-
+pcor_results_merged |> 
+  arrange( desc(abs(pcor)))
 ```
 
 ```{r perm_pcor_all}
@@ -3644,15 +3652,16 @@ pcor_results_merged <- pcor_results_npc |>
 cand_mediators_npc <- npc.genes |> 
   filter( 
     gene_chr == 1, 
-    midpoint >= filter( bands.esc.npc.rna,chr==1)$start[1] , 
-    midpoint  <= filter( bands.esc.npc.rna,chr==1)$end[1] 
+    midpoint >= filter( bands.esc.npc.rna,chr==1)$start[1]-10e06 , 
+    midpoint  <= filter( bands.esc.npc.rna,chr==1)$end[1] +10e06
     )
 
-cand_mediators_esc <- esc.genes |> 
+cand_mediators_esc <- all.genes |>
+  filter( ensembl_gene_id %in% colnames(exprZ_tpm03.esc_rna)) |> 
   filter( 
     gene_chr == 1, 
-    midpoint >= filter( bands.esc.npc.rna,chr==1)$start[1] , 
-    midpoint  <= filter( bands.esc.npc.rna,chr==1)$end[1] 
+    midpoint >= filter( bands.esc.npc.rna,chr==1)$start[1] -10e06, 
+    midpoint  <= filter( bands.esc.npc.rna,chr==1)$end[1] +10e06
     )
 
 pcor_null_results_npc <-c()
@@ -3690,6 +3699,15 @@ pcor_null_results_merged <- pcor_null_results_npc |>
 
 ```
 
+```{r}
+
+pcor_results_merged |> 
+  select(mediator, pcor, p_value, type) |> 
+  arrange( desc(abs(pcor))) |> 
+  mutate_if(is.numeric, formatC, digits = 2) |> 
+  create_dt()
+
+```
 
 ```{r pcor_fig}
 #| eval: true
@@ -3711,7 +3729,81 @@ pcor_null_results_merged |>
   
 ```
 
+```{r chr1_pc1_as}
+#| warning: false
+#| message: false
+
+pmap_Mbp <- lapply( pmap, function(x){x/1e06})
+attr(probs.npc_rna, "is_x_chr") <- NULL
+chr1_pc1_as_npc <- scan1snps(genoprobs = probs.npc_rna,
+                     map = pmap_Mbp,
+                     pheno = chr1_pc1_rankZ,
+                     kinship = kinship_loco.npc_rna[[chr1_pc1_peak$chr]],
+                     addcovar = covar.npc_rna,
+                     chr = as.character(chr1_pc1_peak$chr),
+                     query_func = query_variants,
+                     start = chr1_pc1_peak$pos/1e06 - 5,
+                     end = chr1_pc1_peak$pos/1e06 + 5,
+                     keep_all_snps = F
+                     )
+
+genes <- query_genes( chr1_pc1_peak$chr,
+                      chr1_pc1_peak$pos/1e06 - 5,
+                      chr1_pc1_peak$pos/1e06 + 5) %>%
+  distinct()
+
+```
+
+```{r chr1_pc1_as_plot}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 8
+
+par(mar=c(4.1, 4.1,2, 1))
+
+plot(chr1_pc1_as_npc$lod,
+     chr1_pc1_as_npc$snpinfo,
+     drop_hilit = 1,
+     genes = genes, cex.lab =1.5)
+
+```
+
+
+```{r chr1_pc1_as_table}
+#| warning: false
+#| message: false
+
+chr1_pc1_as_npc %>%
+   as.data.frame() %>%
+  filter( PC1 > 5) %>%
+  select( LOD = PC1,
+          snp_id = snpinfo.snp,
+          pos = snpinfo.pos,
+          alleles = snpinfo.alleles,
+          consequence = snpinfo.consequence,
+          ensembl_gene_id = snpinfo.ensembl_gene,
+          `129` = snpinfo.129S1_SvImJ,
+          `AJ` = snpinfo.A_J,
+          `CAST` = snpinfo.CAST_EiJ,
+          `NZO` = snpinfo.NZO_HlLtJ,
+          `PWK` = snpinfo.PWK_PhJ,
+          `B6` = snpinfo.C57BL_6J,
+          `NOD` = snpinfo.NOD_ShiLtJ,
+          `WSB` = snpinfo.WSB_EiJ
+          ) %>%
+
+  # filter( `129`==`B6`, B6==CAST , CAST==NOD &
+  #           AJ == NZO, NZO ==WSB, PWK ==WSB) %>%
+  left_join(., select(all.genes, ensembl_gene_id, mgi_symbol) %>%  distinct() ) %>%
+  mutate_if(is.numeric, round, 1) %>%
+  create_dt()
+
+```
+
 ### Closer look at Rnf152
+
+Note that in the DO mESCs, *Rnf152* gets filtered out because it has a median tpm of ~0.3 which is below our threshold of 0.5. I went back and got the expression data to do eQTL mapping and mediation to have a point of comparison to the NPC results.  
 
 ```{r rnf152_eqtl}
 #| warning: false
@@ -3720,9 +3812,16 @@ pcor_null_results_merged |>
 rnf152_eqtl <- peaks.npc_rna.wesc.overlap %>%
   filter( lod.npc_rna >7.5, mgi_symbol =="Rnf152")
 
+kinship.shared.esc_rna <- calc_kinship(shared.probs.esc_rna, type = "loco")
 kinship.shared.npc_rna <- calc_kinship(shared.probs.npc_rna, type = "loco")
 
 # LOD plot
+rnf152_esc_scan <- scan1( pheno = exprZ_tpm03.esc_rna[shared.samples,rnf152_eqtl$ensembl_gene_id,drop=FALSE],
+                    genoprobs = shared.probs.esc_rna,
+                    kinship = kinship.shared.esc_rna,
+                    addcovar = covar.esc_rna[shared.samples,])
+# LOD plot
+
 rnf152_npc_scan <- scan1( pheno = exprZ.npc_rna[shared.samples,rnf152_eqtl$ensembl_gene_id,drop=FALSE],
                     genoprobs = shared.probs.npc_rna,
                     kinship = kinship.shared.npc_rna,
@@ -3730,14 +3829,20 @@ rnf152_npc_scan <- scan1( pheno = exprZ.npc_rna[shared.samples,rnf152_eqtl$ensem
 
 
 rnf152_npc_scan %>% 
-  as.data.frame() %>% 
+  as_tibble( rownames = "marker") %>% 
   rename( npc_rna = rnf152_eqtl$ensembl_gene_id) |> 
-  mutate( marker = dimnames(rnf152_npc_scan)[[1]]) %>%
-  left_join(map_dat2) -> rnf152_qtl_scans
+  full_join(
+    rnf152_esc_scan |> 
+      as_tibble(rownames = "marker") |> 
+      rename( esc_rna = rnf152_eqtl$ensembl_gene_id) 
+  ) |> 
+  left_join(map_dat2) |> 
+  mutate( esc_rna = as.numeric(esc_rna),
+          npc_rna = as.numeric(npc_rna)) -> rnf152_qtl_scans
 
 rnf152_qtl_scans %>%
   filter( chr == rnf152_eqtl$peak_chr) %>%
-  pivot_longer( cols = c("npc_rna"), names_to = "qtl_type", values_to = "lod") %>%
+  pivot_longer( cols = c("npc_rna","esc_rna"), names_to = "qtl_type", values_to = "lod") %>%
   ggplot()+
     aes(
       x= pos_bp/1e06,
@@ -3754,8 +3859,8 @@ rnf152_qtl_scans %>%
              show.legend = FALSE)+
     geom_line( size = 1.5)+
     theme_pubclean( base_size = 18)+
-  scale_color_manual( values = c(qtl.colors[["npc_rna"]]),
-                       labels = c("npc_rna"="NPC"))+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]], qtl.colors[["esc_rna"]]),
+                       labels = c("npc_rna"="NPC", "esc_rna"="ESC"))+
   xlab(paste0("Chr ",rnf152_eqtl$peak_chr," location (Mbp)"))+
   ylab( "LOD score")+
   labs(col = "QTL type")+
@@ -3766,17 +3871,51 @@ rnf152_qtl_scans %>%
   annotate( "text", x= 20+filter( bands.esc.npc.rna,chr==1)$end[1]/1e06, y = 6, label ="eQTL \n Hotspot", size =5)-> rnf152_lod_plot
 
 # Effects plot
-rnf152_npc_eff <- peaks.npc_rna.wEffs %>%
-  inner_join( rnf152_eqtl %>% select(ensembl_gene_id, peak_chr, lod.npc_rna))
+rnf152_npc_eff_scan <- scan1blup( pheno = exprZ.npc_rna[shared.samples,rnf152_eqtl$ensembl_gene_id,drop=FALSE], 
+                           genoprobs = shared.probs.npc_rna[,rnf152_eqtl$peak_chr], 
+                           kinship = kinship.shared.npc_rna[[rnf152_eqtl$peak_chr]],
+                           addcovar = covar.npc_rna[shared.samples,]
+  
+)
 
-rnf152_effs <- rnf152_npc_eff %>% 
-  select(paste0(LETTERS[1:8], ".npc_rna")) 
+rnf152_esc_eff_scan <- scan1blup( pheno = exprZ_tpm03.esc_rna[shared.samples,rnf152_eqtl$ensembl_gene_id,drop=FALSE], 
+                           genoprobs = shared.probs.esc_rna[,rnf152_eqtl$peak_chr], 
+                           kinship = kinship.shared.esc_rna[[rnf152_eqtl$peak_chr]],
+                           addcovar = covar.esc_rna[shared.samples,]
+  
+)
+# find markers before/after the NPC eQTL peak to look at the same locus in the ESC scan
+rnf152_npc_eqtl_closest_marker <- map_dat2 |> 
+  filter( chr == rnf152_eqtl$peak_chr,
+          abs(pos_bp-rnf152_eqtl$interp_bp_peak.npc_rna) == 0
+  )
+rnf152_eqtl_markers <- map_dat2 |> 
+  filter( n == rnf152_npc_eqtl_closest_marker$n-1 |
+            n == rnf152_npc_eqtl_closest_marker$n |
+            n == rnf152_npc_eqtl_closest_marker$n + 1)
 
-rnf152_effs %>%
-  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna")),
-          names_to = c("effect"),
-          values_to = "value") %>%
-  separate(effect, sep ="[.]", into = c("effect","type")) %>%
+#rnf152_esc_eff <- colMeans(rnf152_esc_eff_scan[rnf152_eqtl_markers$marker,LETTERS[1:8]]) 
+rnf152_esc_eff <- (rnf152_esc_eff_scan[rnf152_npc_eqtl_closest_marker$marker,LETTERS[1:8]]) 
+names(rnf152_esc_eff) <- paste0(names(rnf152_esc_eff),".esc_rna")
+
+#rnf152_npc_eff <- colMeans(rnf152_npc_eff_scan[rnf152_eqtl_markers$marker,LETTERS[1:8]]) 
+rnf152_npc_eff <- (rnf152_npc_eff_scan[rnf152_npc_eqtl_closest_marker$marker,LETTERS[1:8]]) 
+names(rnf152_npc_eff) <- paste0(names(rnf152_npc_eff),".npc_rna")
+
+rnf152_effs <- rnf152_npc_eff |> 
+  t() |> 
+  as_tibble() |> 
+  cbind(
+   rnf152_esc_eff |> 
+     t() |> 
+     as_tibble()
+  )
+
+rnf152_effs %>% 
+  pivot_longer( cols = c( paste0(LETTERS[1:8], ".npc_rna"),paste0(LETTERS[1:8], ".esc_rna")), 
+                names_to = c("effect"),
+                values_to = "value") %>% 
+  separate(effect, sep ="[.]", into = c("effect","type")) %>% 
   mutate( effect = case_when( effect == "A" ~ "AJ",
                               effect == "B" ~ "B6",
                               effect == "C" ~ "129",
@@ -3784,18 +3923,18 @@ rnf152_effs %>%
                               effect == "E" ~ "NZO",
                               effect == "F" ~ "CAST",
                               effect == "G" ~ "PWK",
-                              effect == "H" ~ "WSB")) %>%
-  mutate( type = factor(type, levels =c("npc_rna"))) %>%
+                              effect == "H" ~ "WSB")) %>% 
+  mutate( type = factor(type, levels =c("npc_rna","esc_rna"))) %>% 
   ggplot()+
   aes( x = effect,
-       y = value,
+       y = value, 
        col = type,
        group = type)+
   geom_point(size = 4, show.legend = FALSE)+
   geom_line(show.legend = T, size = 1.2)+
   theme_pubclean(base_size = 18)+
-  scale_color_manual( values = c(qtl.colors[["npc_rna"]]),
-                      labels = c("npc_rna"="NPC"))+
+  scale_color_manual( values = c(qtl.colors[["npc_rna"]],qtl.colors[["esc_rna"]]), 
+                       labels = c("npc_rna"="NPC","esc_rna"="ESC"))+
   ylab("Haplotype effects")+
   xlab("")+
   #ylim(-2,1.1)+
@@ -3805,6 +3944,7 @@ rnf152_effs %>%
   labs(col ="QTL type")+
   coord_flip( clip ="off")+
   theme(legend.position = "none") -> rnf152_haplotype_plot
+
 
 ```
 
