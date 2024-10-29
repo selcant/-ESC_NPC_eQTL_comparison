@@ -267,6 +267,19 @@ sac_genes <- read_tsv(here("_data","mitotic_sac_genes.tsv"), col_names = c("mgi_
   select(-mgi_number, -description, -gene_biotype,-gene_chr) %>% 
   left_join(all.genes)
 
+
+```
+
+```{r}
+#| label: vst
+
+# doing vst on both data sets to remove the dependency of mean on variance
+
+expr.esc_rna_vst <- DESeq2::vst(object = t(round(expr.esc_rna)))
+expr.npc_rna_vst <- DESeq2::vst(object = t(round(expr.npc_rna)))
+
+expr.esc_rna <- t(expr.esc_rna_vst)
+expr.npc_rna <- t(expr.npc_rna_vst)
 ```
 
 Here, I am contrasting global gene expression between embryonic stem cells (ESCs) and neural progenitor cells (NPCs) derived from Diversity Outbred (DO) mice.
@@ -386,7 +399,7 @@ ggscatter(var.npc_rna,
   add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE,
   yscale = "log10", xscale = "log10"
 ) +
-  stat_cor(method = "pearson", label.x = -1, label.y = 10) + # Add correlation coefficient
+  stat_cor(method = "pearson", label.x = .6, label.y = 1.1) + # Add correlation coefficient
   xlab("Mean") +
   ylab("Variance") +
   theme_pubclean(base_size = 14) +
@@ -1129,492 +1142,6 @@ npc_sex_ora$result %>%
 
 ```
 
-## Gene set variation analysis
-
-```{r npc_rna_gsva}
-#| warning: false
-#| message: false
-#| results: hide
-#| cache: true
-# reading in the GO + mgi downloaded from: http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt
-go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt") %>% 
-  mutate( genes = str_split(genes, ",")) %>% 
-  unnest() # separete the symbols, note the overlap: length(intersect(unique(go_terms$genes), npc.genes$mgi_symbol) ) = 11806
-
-
-slim_go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/map2MGIslim.txt") %>% 
-  select(-term) %>% 
-  mutate( ONT = case_when( aspect == "P" ~  "BP",
-                     aspect == "F" ~ "MF",
-                     aspect == "C" ~ "CC"
-                     )
-          ) %>% 
-  select(-aspect)
-
-genesbygo <- split(go_terms$genes, go_terms$GO_id)
-
-go_terms_annot <- go_terms %>%  
-  select(GO_id) %>% 
-  distinct() %>% 
-  left_join( slim_go_terms %>%  select( GO_id, ONT) %>% distinct())
-
-goannot_wdef <- AnnotationDbi::select(GO.db, keys= unique(go_terms$GO_id), columns=c("GOID","DEFINITION","ONTOLOGY","TERM")) %>%
-  left_join( slim_go_terms, by=c("GOID"="GO_id")) %>% 
-  mutate( ONTOLOGY = ONT) %>% 
-  select(-ONT)
-
-go_bp <- goannot_wdef %>% filter( ONTOLOGY == "BP") %>% 
-  select(GOID) %>%  distinct()
-
-# expr - change gene id's to symbols for GSVA with GO
-expr.npc_rna_upd <- expr.npc_rna[, npc.genes$ensembl_gene_id]
-colnames(expr.npc_rna_upd) <- npc.genes$mgi_symbol
-
-
-# I can't seem to run GSVA anymore! Keep erroring out. 
-# I was able to run it separately in a stand alone R session.
-# loading the results here instead of running.
-# load(here("_data","Results_from_GSVA_2022-09-23.RData"))
-gsva_rna <- gsva(  expr = t(expr.npc_rna_upd),
-                   gset.idx.list = genesbygo,
-                    method ="gsva",
-                    kcdf = "none",
-                    min.sz = 5,
-                    max.sz = 1000
-                   )
-
-
-# following up on rna results
-gsva_rna %>% 
-  as_tibble(rownames = "Category") %>% 
-  filter( Category %in% go_bp$GOID) %>% #filtering for BP
-  pivot_longer( cols = rownames(expr.npc_rna_upd),
-                values_to = "Enrichment_Score",
-                names_to = "sampleid") %>% 
-  # add sexes + lifr genotypes
-  left_join( covarTidy.npc_rna) -> gsva_rna_results
-
-gsva_rna_results %>% 
-  group_by( Category) %>% 
-  rstatix::anova_test( Enrichment_Score ~ sex+lifr_geno) %>% 
-  rstatix::adjust_pvalue( method = "BH") %>%
-  rstatix::add_significance("p.adj") %>% 
-  ungroup() -> gsva_rna_aov
-
-gsva_rna_results %>% 
-  group_by(Category) %>% 
-  rstatix::tukey_hsd( Enrichment_Score ~ sex+lifr_geno) %>% 
-  ungroup() %>% 
-  as_tibble() %>% 
-  left_join( goannot_wdef, by = c("Category" = "GOID")) -> gsva_rna_tukey
-
-gsva_rna_aov %>% 
-  as_tibble() %>% 
-  filter( p.adj.signif != "ns" ) -> signif_eff_terms_rna
-
-gsva_rna_tukey %>% 
-  inner_join( ., select( signif_eff_terms_rna, Category, term = Effect)) -> signif_results_tukey_rna
-
-```
-
-### GSVA pathways with significant effects
-
-Below are the list of GO Biological processes that show significant differences by sex or genotype at the *Lifr* locus, or their interaction (adjusted p-value \< 0.01).
-
-```{r gsva_results_table}
-#| warning: false
-#| message: false
-
-gsva_rna_tukey %>%
-  filter( Category %in% (signif_results_tukey_rna %>% filter( p.adj <= 0.01 , term %in% c("sex")))$Category ) %>%
-  filter( term == "sex") %>% 
-  rbind(
-    gsva_rna_tukey %>%
-      filter( Category %in% (signif_results_tukey_rna %>% filter( p.adj <= 0.01 , term %in% c("lifr_geno")))$Category ) %>%
-      filter( term == "lifr_geno") 
-  ) %>% 
-  select(Effect= term, Category, TERM,group1, group2, estimate,p.adj) %>% 
-  #filter( p.adj < 0.01) %>% 
-  distinct() %>% 
- mutate( "Adjusted p-value" = formatC(p.adj, digits=2, format ="e"),
-          estimate= round(estimate,2)) %>% 
-  select(-p.adj) %>% 
-  arrange(estimate) %>% 
-  create_dt()
-
-```
-
-### GSVA QTL table
-
-```{r gsva_qtl_scans}
-#| warning: false
-#| message: false
-#| cache: true
-
-gsva_rna_results %>%
-  # filter( Category %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
-  select(Category, sampleid, Enrichment_Score) %>%
-  pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>%
-  column_to_rownames("sampleid") %>%
-  as.matrix() -> gsva_results_mat
-
-# rankZ
-gsva_results_mat_rankZ <- apply(gsva_results_mat, 2,rankZ )
-
-#qtl mapping
-gsva_qtl <- scan1( genoprobs = probs.npc_rna,
-                   pheno = gsva_results_mat_rankZ,
-                   kinship = kinship_loco.npc_rna,
-                   addcovar = covar.npc_rna)
-#save( gsva_qtl, file = here("_data","GSVA_npc_qtl_scans.RData"))
-
-# load(here("_data","GSVA_npc_qtl_scans.RData"))
-gsva_qtl_peaks <- find_peaks( gsva_qtl, threshold = 7, gmap)
-# add interp_peak_bp, before, after
-gsva_qtl_peaks <- gsva_qtl_peaks %>% 
-  left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% 
-  mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>% 
-  mutate(phenotype=lodcolumn) %>%
-  mutate( peak_chr = chr,
-          peak_cM = pos) %>%
-  interp_bp(.) #add bp location for peaks
-
-```
-
-```{r}
-
-gsva_qtl_peaks %>% 
-  select( GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
-  # filter( GOID %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
-  #                                                          p.adj.signif != "ns" ))$Category ) %>%
-  filter(Lod > 7.5) %>% 
-  mutate_if(is.numeric, round, 2) %>% 
-  create_dt()
-
-```
-
-```{r closer_look_at_gsva_results}
-#| warning: false
-#| message: false
-
-gsva_qtl_highlight <- gsva_qtl_peaks %>% 
-  filter(
-    (chr == 1 & between(interp_bp_peak, 104e06, 113e06)) |
-    (chr == 10 & between(interp_bp_peak, 33e06, 40e06) ) |
-    (chr == 11 & between(interp_bp_peak, 107e06, 111e06) )
-  ) %>% 
-  filter(lod > 8)
-
-```
-
-### GSVA qtl peaks
-
-::: {#GSVA_qtls .panel-tabset .nav-pills}
-```{r gsva_qtl_follow_up_plots}
-#| warning: false
-#| message: false
-#| results: asis
-#| fig-height: 6
-#| fig-width: 12
-
-haps <- LETTERS[1:8]
-
-for( i in 1:nrow(gsva_qtl_highlight)){
-  peak_chr <- gsva_qtl_highlight$peak_chr[i]
-  lodcolumn <- gsva_qtl_highlight$lodcolumn[i]
-  
-  # eQTL scan
-  qtl_scan <- scan1(genoprobs = probs.npc_rna,
-                 pheno = gsva_results_mat_rankZ[,lodcolumn,drop = F],
-                 kinship = kinship_loco.npc_rna,
-                 addcovar = covar.npc_rna)
-  qtl_effs <- scan1blup(genoprobs =probs.npc_rna[,peak_chr],
-                   pheno = gsva_results_mat_rankZ[,lodcolumn,drop = F],
-                   kinship = kinship_loco.npc_rna[[peak_chr]],
-                   addcovar = covar.npc_rna)
-
-  cat("\n#### ",gsva_qtl_highlight$TERM[i],"peak on", peak_chr ,"\n")
-  plot_coefCC(qtl_effs,
-                            pmap,
-                            scan1_output = qtl_scan,
-                            main=paste0(gsva_qtl_highlight$TERM[i]," plot"),
-              xlim = c(gsva_qtl_highlight$interp_bp_peak[i]-20e06,
-                       gsva_qtl_highlight$interp_bp_peak[i]+20e06) )
-  abline(v=gsva_qtl_highlight$interp_bp_peak[i],col="red",lwd=2,lty=3)
-  cat("\n\n")
-}
-
-
-
-```
-:::
-:::
-
-# Covariation in the DO ESC and NPC transcript abundance
-
-::: {#NPC_covar .panel-tabset .nav-pills}
-## Overlap between transcriptomes
-
-```{r overlap_plot}
-#| warning: false
-#| message: false
-#| fig-width: 6
-#| fig-height: 4
-
-sample.overlap <- euler(c( "ESC" = nrow(covarTidy.esc_rna)-length(shared.samples), 
-                           "NPC"=nrow(covarTidy.npc_rna)-length(shared.samples), 
-                           "ESC&NPC"=length(shared.samples)) ,shape="ellipse")
-
-gene.overlap <-  euler(c( "ESC" = nrow(esc.genes)-length(shared.genes), 
-                           "NPC"= nrow(npc.genes)-length(shared.genes), 
-                           "ESC&NPC"=length(shared.genes)) ,shape="ellipse")
-
-p1 <- plot(sample.overlap,quantities = TRUE, main='Sample overlap',
-           col=c(qtl.colors[["esc_rna"]],qtl.colors[["npc_rna"]],qtl.colors[["shared"]]), 
-           fill=c(qtl.colors[["esc_rna"]],qtl.colors[["npc_rna"]],qtl.colors[["shared"]]),
-           alpha=0.6)
-p2 <- plot(gene.overlap,quantities = TRUE, main="Gene overlap",
-           col=c(qtl.colors[["esc_rna"]],qtl.colors[["npc_rna"]],qtl.colors[["shared"]]), 
-           fill=c(qtl.colors[["esc_rna"]],qtl.colors[["npc_rna"]],qtl.colors[["shared"]]),
-           alpha=0.6)
-ggarrange(p1,NULL,p2,nrow = 1, ncol=3 , widths = c(1, 0.1,0.9))  
-
-```
-
-```{r esc_rna_gene_stats}
-#| warning: false
-#| message: false
-
-# esc_rna gene stats
-var.esc_rna <- expr.esc_rna %>%
-  as_tibble(.) %>%
-  summarise_all(list(~ var(., na.rm = T))) %>%
-  t() %>%
-  as.data.frame() %>%
-  rownames_to_column() %>%
-  rename(ensembl_gene_id = rowname, var = V1) %>%
-  arrange(desc(var))
-
-n.esc_rna <- expr.esc_rna %>%
-  as_tibble(.) %>%
-  summarise_all(list(~ sum(!is.na(.)))) %>%
-  t() %>%
-  as.data.frame() %>%
-  rownames_to_column() %>%
-  rename(ensembl_gene_id = rowname, n = V1) %>%
-  arrange(desc(n))
-
-mean.esc_rna <- expr.esc_rna %>%
-  as_tibble(.) %>%
-  summarise_all(list(~ mean(., na.rm = T))) %>%
-  t() %>%
-  as.data.frame() %>%
-  rownames_to_column() %>%
-  rename(ensembl_gene_id = rowname, mean = V1) %>%
-  arrange(desc(mean))
-
-var.esc_rna <- inner_join(var.esc_rna, mean.esc_rna) %>%
-  inner_join(., n.esc_rna) %>%
-  left_join(., select(all.genes, ensembl_gene_id, mgi_symbol, gene_chr)) %>%
-  mutate(sd = sqrt(var)) %>%
-  mutate(cv.esc_rna = 100 * sd / (mean)) %>%
-  rename(mean.esc_rna = mean, sd.esc_rna = sd, n.esc_rna=n, var.esc_rna=var)
-
-```
-
-```{r stat_plots_esc_npc}
-#| warning: false
-#| message: false
-#| fig-width: 9
-#| fig-height: 4
-
-# mean esc vs npc
-var.esc_rna %>% 
-  inner_join( var.npc_rna) %>% 
-  ggplot()+
-  aes( x = mean.esc_rna, 
-       y = mean.npc_rna  )+
-  geom_point()+
-  geom_smooth( method= "lm")+
-  stat_cor()+
-  theme_pubclean(base_size = 14)+
-  scale_x_log10()+
-  scale_y_log10()+
-  xlab("Mean transcript abundance in ESCs")+
-  ylab("Mean transcript abundance in NPCs") -> p.mean
-
-# variance esc vs npc
-var.esc_rna %>% 
-  inner_join( var.npc_rna) %>% 
-  ggplot()+
-  aes( x = var.esc_rna, 
-       y = var.npc_rna  )+
-  geom_point()+
-  geom_smooth( method= "lm")+
-  stat_cor()+
-  theme_pubclean(base_size = 14)+
-  scale_x_log10()+
-  scale_y_log10()+
-  xlab("Variance in transcript abundance in ESCs")+
-  ylab("Variance transcript abundance in NPCs") -> p.var
-
-
-# CV esc vs npc
-var.esc_rna %>% 
-  inner_join( var.npc_rna) %>% 
-  ggplot()+
-  aes( x = cv.esc_rna, 
-       y = cv.npc_rna  )+
-  geom_point()+
-  geom_smooth( method= "lm")+
-  stat_cor()+
-  theme_pubclean(base_size = 14)+
-  scale_x_log10()+
-  scale_y_log10()+
-  xlab("%CV in transcript abundance in ESCs")+
-  ylab("%CV transcript abundance in NPCs") -> p.cv
-
-ggarrange(p.mean, p.cv,  nrow = 1)
-
-```
-
-Comparing the variance distribution in ESC (n = 184) and NPC (n = 186) samples.
-
-```{r esc_npc_var_dist}
-#| warning: false
-#| message: false
-#| fig-width: 10
-#| fig-height: 4
-
-var.esc_rna %>% 
-  full_join( var.npc_rna |> select(-type)) %>% 
-  pivot_longer( cols = c("var.esc_rna","var.npc_rna","sd.esc_rna","sd.npc_rna","n.esc_rna","n.npc_rna","mean.esc_rna","mean.npc_rna", "cv.esc_rna","cv.npc_rna"),names_to = c("parameter","type"),names_sep = "[.]", values_to ="value" ) %>% 
-  filter(parameter == "var") %>% 
-  ggplot() +
-  aes(x = type,
-      y = value,
-      col = type) +
-  geom_violin()+
-  geom_boxplot( width = 0.2)+
-  xlab("Variance") +
-  theme_pubclean(base_size = 14)+
-  scale_y_log10()+
-  scale_color_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]]))+
-  scale_fill_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]])) -> var_plot
-
-var.esc_rna %>% 
-full_join( var.npc_rna |> select(-type)) %>% 
-  pivot_longer( cols = c("var.esc_rna","var.npc_rna","sd.esc_rna","sd.npc_rna","n.esc_rna","n.npc_rna","mean.esc_rna","mean.npc_rna", "cv.esc_rna","cv.npc_rna"),names_to = c("parameter","type"),names_sep = "[.]", values_to ="value" ) %>% 
-  filter(parameter == "cv") %>% 
-  ggplot() +
-  aes(x = type,
-      y = value,
-      col = type) +
-  geom_violin()+
-  geom_boxplot( width = 0.2)+
-  xlab("%CV") +
-  theme_pubclean(base_size = 14)+
-  scale_y_log10()+
-  scale_color_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]]))+
-  scale_fill_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]])) -> cv_plot
-
-var.esc_rna %>% 
-full_join( var.npc_rna |> select(-type)) %>% 
-  pivot_longer( cols = c("var.esc_rna","var.npc_rna","sd.esc_rna","sd.npc_rna","n.esc_rna","n.npc_rna","mean.esc_rna","mean.npc_rna", "cv.esc_rna","cv.npc_rna"),names_to = c("parameter","type"),names_sep = "[.]", values_to ="value" ) %>% 
-  filter(parameter == "sd") %>% 
-  ggplot() +
-  aes(x = type,
-      y = value,
-      col = type) +
-  geom_violin()+
-  geom_boxplot( width = 0.2)+
-  xlab("SD") +
-  theme_pubclean(base_size = 14)+
-  scale_y_log10()+
-  scale_color_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]]))+
-  scale_fill_manual(values = c(esc_rna = qtl.colors[["esc_rna"]],npc_rna=qtl.colors[["npc_rna"]])) -> sd_plot
-
-ggarrange(var_plot, sd_plot, cv_plot, nrow = 1, common.legend = T)
-
-```
-
-Looking at the abs(log2foldchange) between pairs of samples within ESCs vs NPCs as a measure of variation (?).
-
-```{r}
-#| eval: false
-
-# maybe get the median over genes/samples so you get one value per gene/sample?
-diff_esc_rna <- c()
-for(i in 1: nrow(shared.expr.esc_rna)){
-     
-   diff_esc_rna[[i]] <- apply( shared.expr.esc_rna, 1, FUN = function(x){ log2(x/shared.expr.esc_rna[i,])})
-   
-}
-
-diff_npc_rna <- c()
-for(i in 1: nrow(shared.expr.npc_rna)){
-     
-   diff_npc_rna[[i]] <- apply( shared.expr.npc_rna, 1, FUN = function(x){ log2(x/shared.expr.npc_rna[i,])})
-   
-}
-
-
-# I did sth similar for protein complex analysis
-# let's get pairwise correlations for ESC/NPC
-npc_cor <- rcorr( shared.expr.npc_rna, type = "pearson")
-npc_cor_df <- tibble( col_gene = colnames(npc_cor$r)[col(npc_cor$r)] ,
-                         row_gene = rownames(npc_cor$r)[row(npc_cor$r)] ,
-                         cor_gene = c(npc_cor$r),
-                         n_gene = c(npc_cor$n),
-                         p_gene = c(npc_cor$P)) %>% 
-          left_join( .,
-                     select(all.genes, 
-                            ensembl_gene_id, mgi_symbol), 
-                     by=c("col_gene"="ensembl_gene_id")) %>% 
-          rename( gene_id_col = col_gene ,
-                  mgi_symbol_col = mgi_symbol) %>% 
-          left_join( .,
-                     select(all.genes, 
-                            ensembl_gene_id, mgi_symbol), 
-                     by=c("row_gene"="ensembl_gene_id")) %>% 
-          rename(gene_id_row = row_gene,
-                 mgi_symbol_row = mgi_symbol)
-
-esc_cor <- rcorr( shared.expr.esc_rna, type = "pearson")
-esc_cor_df <- tibble( col_gene = colnames(esc_cor$r)[col(esc_cor$r)] ,
-                         row_gene = rownames(esc_cor$r)[row(esc_cor$r)] ,
-                         cor_gene = c(esc_cor$r),
-                         n_gene = c(esc_cor$n),
-                         p_gene = c(esc_cor$P)) %>% 
-          left_join( .,
-                     select(all.genes, 
-                            ensembl_gene_id, mgi_symbol), 
-                     by=c("col_gene"="ensembl_gene_id")) %>% 
-          rename( gene_id_col = col_gene ,
-                  mgi_symbol_col = mgi_symbol) %>% 
-          left_join( .,
-                     select(all.genes, 
-                            ensembl_gene_id, mgi_symbol), 
-                     by=c("row_gene"="ensembl_gene_id")) %>% 
-          rename(gene_id_row = row_gene,
-                 mgi_symbol_row = mgi_symbol)
-
-npc_cor_df |> 
-  select(
-    gene_id_col, gene_id_row,mgi_symbol_col,mgi_symbol_row, npc_cor = cor_gene,
-  ) |> 
-  left_join(
-    esc_cor_df |> 
-      select(gene_id_col, gene_id_row, esc_cor = cor_gene)
-  ) |> 
-  pivot_longer( c(esc_cor, npc_cor), names_to = "type", values_to = "cor") |> 
-  head()
-  ggplot()+
-  aes( x = )
-
-
-
-```
 
 ## Principal component analysis
 
@@ -1716,12 +1243,52 @@ pca_esc_npc$x%>%
   ylim(-60,60)+
   xlim(-120,120)+
   xlab(paste0("PC1 (",100*round(var_explained[1],2),"%)"))+
-  ylab(paste0("PC4 (",100*round(var_explained[4],2),"%)")) -> pca_plot
+  ylab(paste0("PC4 (",100*round(var_explained[4],2),"%)"))+
+  labs( col = "Cell state", shape = "Sex")-> pca_plot
 
-# ggsave(pca_plot, filename = here("figures","figure1c.svg"), width = 8, height = 4, dpi = 300, units = "in")
+# ggsave(pca_plot, filename = here("figures","figure1c.svg"), width = 7, height = 4, dpi = 300, units = "in")
 
 pca_plot
 
+```
+
+```{r pc2_3_plot_all}
+#| warning: false
+#| message: false
+#| fig-height: 4
+#| fig-width: 8
+
+pca_esc_npc$x%>%
+  as_tibble( rownames = "sample") %>%
+  separate(sample, into = c("sampleid","type"),sep = "_type:") |> 
+  left_join(annot_all_expr) %>%
+  mutate(sex = ifelse(sex == "F", "Female", "Male"),type = toupper(type)) %>%
+  ggplot()+
+  aes(
+    x = PC2, 
+    y = PC3, 
+    shape = sex,
+    color = type
+  )+
+  geom_point(size = 4, alpha = 0.7)+
+  theme_pubclean(base_size = 20)+
+  theme(legend.position = "right")+
+  #color_palette("npg")+
+  scale_color_manual(values = c("ESC"=qtl.colors[["esc_rna"]],
+                                "NPC"= qtl.colors[["npc_rna"]]))+
+  scale_shape_manual( values = c(3, 20))+
+  ylim(-60,60)+
+  xlim(-120,120)+
+  xlab(paste0("PC2 (",100*round(var_explained[2],2),"%)"))+
+  ylab(paste0("PC3 (",100*round(var_explained[3],2),"%)")) +
+  labs( col = "Cell state", shape = "Sex") -> pca_plot_pc23
+
+# combined_plot <- ggarrange( pca_plot, pca_plot_pc23, common.legend = T, nrow = 1, legend = "right")
+# 
+# ggsave(combined_plot, filename = here("figures","figure1c_combined.svg"), width = 10, height = 4, dpi = 300, units = "in")
+
+
+pca_plot_pc23
 ```
 
 ```{r pc1_ora_full_data}
@@ -1874,6 +1441,14 @@ pc3_drivers <- pca_esc_npc$rotation[,"PC3", drop = FALSE] %>%
              ) %>% 
   filter( abs(PC3) >= quantile(abs(PC3), 0.95))
 
+
+pc4_drivers <- pca_esc_npc$rotation[,"PC4", drop = FALSE] %>% 
+  as_tibble( rownames = "ensembl_gene_id") %>% 
+  left_join( all.genes %>%  
+               select(ensembl_gene_id, mgi_symbol)
+             ) %>% 
+  filter( abs(PC4) >= quantile(abs(PC4), 0.95))
+
 g.pc2 <- gost(
   query = (pc2_drivers)$mgi_symbol,
   organism = "mmusculus",
@@ -2015,7 +1590,17 @@ PC3:
 
 -   chromatin organization.
 
-PC4 is mostly driven by genes on sex chromosomes.
+PC4 is mostly driven by genes on sex chromosomes (145/605 drivers are on X chr).
+
+```{r}
+#| eval: false
+pc4_drivers |> 
+  left_join( all.genes |> 
+               select(ensembl_gene_id, gene_chr)) |> 
+  count(gene_chr) |> 
+  arrange(desc(n))
+  
+```
 
 ## Correlation analysis
 
@@ -2134,6 +1719,31 @@ null_sample_cor_dist %>%
   stat_compare_means( label.y = 1, label.x = 1.15)+
   ylim(-1,1) -> null_dist_plot
 
+```
+
+```{r}
+#| label: mapping_with_cor
+#| eval: false
+
+real_sample_cor_dist |> 
+  select(esc, cor_expr) |> 
+  mutate( esc =gsub(".esc_rna","",esc)) |> 
+  column_to_rownames("esc") |> 
+  as.matrix()-> real_sample_cor_mt
+real_sample_cor_mt_rankZ <- apply(real_sample_cor_mt, 2, rankZ)
+
+cor_scan <- scan1( genoprobs = shared.probs.esc_rna, 
+                   pheno =real_sample_cor_mt_rankZ, 
+                   kinship = kinship.shared.esc_rna, 
+                   addcovar = covar.esc_rna[shared.samples, "sex"] )
+
+cor_scan_perm <- scan1perm(genoprobs = shared.probs.esc_rna, 
+                   pheno =real_sample_cor_mt_rankZ, 
+                   kinship = kinship.shared.esc_rna, 
+                   addcovar = covar.esc_rna[shared.samples, "sex"] ,
+                   n_perm = 1000)
+plot_scan1(cor_scan, pmap)
+find_peaks(cor_scan, pmap, threshold = 6)
 ```
 
 Pearson correlation between ESC and NPC transcriptomes using upper quartile normalized, batch corrected transcript abundance values.
@@ -2416,400 +2026,6 @@ simplifyGOFromMultipleLists( lt = esc_npc_uniq_go_bp,
                              db = 'org.Mm.eg.db',
                              ont = "BP")
 
-
-```
-
-## Gene Set Variation Analysis of combined ESC-NPC Data set
-
-```{r esc_npc_rna_gsva}
-#| warning: false
-#| message: false
-#| cache: true
-#| results: hide
-# reading in the GO + mgi downloaded from: http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt
-go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/MGIgenes_by_GOid.txt") %>% 
-  mutate( genes = str_split(genes, ",")) %>% 
-  unnest() # separete the symbols, note the overlap: length(intersect(unique(go_terms$genes), all.prots$mgi_symbol) ) = 6757
-
-
-slim_go_terms <- read_tsv( "http://www.informatics.jax.org/gotools/data/input/map2MGIslim.txt") %>% 
-  select(-term) %>% 
-  mutate( ONT = case_when( aspect == "P" ~  "BP",
-                     aspect == "F" ~ "MF",
-                     aspect == "C" ~ "CC"
-                     )
-          ) %>% 
-  select(-aspect)
-
-genesbygo <- split(go_terms$genes, go_terms$GO_id)
-
-go_terms_annot <- go_terms %>%  
-  select(GO_id) %>% 
-  distinct() %>% 
-  left_join( slim_go_terms %>%  select( GO_id, ONT) %>% distinct())
-
-goannot_wdef <- AnnotationDbi::select(GO.db, keys= unique(go_terms$GO_id), columns=c("GOID","DEFINITION","ONTOLOGY","TERM")) %>%
-  left_join( slim_go_terms, by=c("GOID"="GO_id")) %>% 
-  mutate( ONTOLOGY = ONT) %>% 
-  select(-ONT)
-
-go_bp <- goannot_wdef %>% filter( ONTOLOGY == "BP") %>% 
-  select(GOID) %>%  distinct()
-
-# expr - change protein id's to symbols for GSVA with GO
-shared.genes2 <- all.genes %>% 
-  filter(ensembl_gene_id %in% shared.genes)
-shared.expr.npc_rna_upd <- shared.expr.npc_rna[, shared.genes2$ensembl_gene_id]
-colnames(shared.expr.npc_rna_upd) <- shared.genes2$mgi_symbol
-rownames(shared.expr.npc_rna_upd) <- paste0( rownames(shared.expr.npc_rna_upd),"_npc")
-shared.expr.esc_rna_upd <- shared.expr.esc_rna[,shared.genes2$ensembl_gene_id]
-colnames(shared.expr.esc_rna_upd) <- shared.genes2$mgi_symbol
-rownames(shared.expr.esc_rna_upd) <- paste0( rownames(shared.expr.esc_rna_upd),"_esc")
-
-shared.expr.merged <- rbind(shared.expr.npc_rna_upd, 
-                            shared.expr.esc_rna_upd)
-
-# I can't seem to run GSVA anymore! Keep erroring out. 
-# I was able to run it separately in a stand alone R session.
-# loading the results here instead of running.
-# load(here("_data","Results_from_GSVA_2022-09-23.RData"))
-gsva_rna_esc_npc <- gsva(  expr = t(shared.expr.merged),
-                    genesbygo,
-                    method ="gsva",
-                    kcdf = "none",
-                    min.sz = 5,
-                    max.sz = 1000,
-                    mx.diff = TRUE)
-
-# following up on rna results
-gsva_rna_esc_npc %>% 
-  as_tibble(rownames = "Category") %>% 
-  filter( Category %in% go_bp$GOID) %>% #filtering for BP
-  pivot_longer( cols = rownames(shared.expr.merged),
-                values_to = "Enrichment_Score",
-                names_to = "sample") %>% 
-  separate( sample, into = c("temp1","temp2", "type"), sep = "_") %>% 
-  unite( sampleid, c(temp1, temp2), sep = "_") %>% 
-  # add sexes + lifr genotypes
-  left_join( covarTidy.npc_rna) -> gsva_rna_esc_npc_results
-
-gsva_rna_esc_npc_results %>% 
-  group_by( Category) %>% 
-  rstatix::anova_test( Enrichment_Score ~ type+sex+lifr_geno) %>% 
-  rstatix::adjust_pvalue( method = "BH") %>%
-  rstatix::add_significance("p.adj") %>% 
-  ungroup() -> gsva_rna_esc_npc_aov
-
-gsva_rna_esc_npc_results %>% 
-  group_by(Category) %>% 
-  rstatix::tukey_hsd( Enrichment_Score ~ type+sex+lifr_geno) %>% 
-  ungroup() %>% 
-  as_tibble() %>% 
-  left_join( goannot_wdef, by = c("Category" = "GOID")) -> gsva_rna_esc_npc_tukey
-
-gsva_rna_esc_npc_aov %>% 
-  as_tibble() %>% 
-  filter( p.adj.signif != "ns" ) -> signif_eff_terms_rna_esc_npc
-
-gsva_rna_esc_npc_tukey %>% 
-  inner_join( ., select( signif_eff_terms_rna_esc_npc, Category, term = Effect)) -> signif_results_tukey_rna_esc_npc
-
-```
-
-Below are the list of GO Biological processes that show significant differences by cell type, and sex(adjusted p-value \<0.01).
-
-```{r gsva_results_table_esc_npc}
-#| warning: false
-#| message: false
-
-
-gsva_rna_esc_npc_tukey %>%
-  filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="sex"))$Category, term == "sex" ) %>%
-  rbind(
-    gsva_rna_esc_npc_tukey %>%
-      filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="type"))$Category, term == "type" )
-    
-  ) %>% 
-    rbind(
-    gsva_rna_esc_npc_tukey %>%
-      filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="lifr_geno"))$Category, term == "lifr_geno" )
-    
-  ) %>% 
-  #   rbind(
-  #   gsva_rna_esc_npc_tukey %>%
-  #     filter( Category %in% (signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="type:sex"))$Category, term == "type:sex" )
-  #   
-  # ) %>% 
-  select(Effect= term, Category, TERM, group1, group2, estimate,p.adj) %>% 
-  #filter( p.adj < 0.01) %>% 
-  distinct() %>% 
- mutate( "Adjusted p-value" = formatC(p.adj, digits=2, format ="e"),
-          estimate= round(estimate,2)) %>% 
-  select(-p.adj) %>% 
-  arrange(estimate) %>% 
-  create_dt()
-
-```
-
-Let's simplify the GO BP terms across effects:
-
-```{r esc_npc_gsva_go_bp}
-#| warning: false
-#| message: false
-#| fig-width: 21
-#| fig-height: 8
-#| eval: true
-
-gsva_esc_npc_go_bp <- list(
-  Sex = unique((signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="sex"))$Category),
-  Cell_state = unique((signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="type"))$Category),
-  Lifr_geno =  unique((signif_results_tukey_rna_esc_npc %>% filter( p.adj <= 0.01, term =="lifr_geno"))$Category)
-) 
-simplifyGOFromMultipleLists( lt = gsva_esc_npc_go_bp, 
-                             db = 'org.Mm.eg.db',
-                             ont = "BP"
-                             )
-
-
-
-
-
-```
-
-Examples:
-
-```{r gsva_examples_esc_npc}
-#| warning: false
-#| message: false
-#| fig-width: 8
-#| fig-height: 4
-
-
-# ribosome biogenesis GO:0042254
-# translation GO:0006412
-# GO:0010564	regulation of cell cycle process
-# GO:0006094	gluconeogenesis
-# GO:0001825	blastocyst formation
-
-# GO:0030182	neuron differentiation
-# GO:0048699	generation of neurons
-# GO:0048666	neuron development
-# GO:0021954	central nervous system neuron development
-# GO:0045995	regulation of embryonic development
-# GO:0097150	neuronal stem cell population maintenance
-# GO:0007417	central nervous system development
-
-gsva_rna_esc_npc_results %>%
-  filter( Category ==  "GO:0007417") %>%
-  left_join( select(goannot_wdef, Category = GOID, TERM)) %>% 
-  ggplot()+
-  aes( x = type,
-       y = Enrichment_Score,
-       col = type)+
-  geom_boxplot(width =0.2, size = 1.1)+
-  #geom_jitter()+
-  #geom_beeswarm(aes(col = sex))+
-  theme_pubclean(base_size = 16)+
-  stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0007417", term == "type"),
-                      label = "{p.adj.signif}",
-                      y.position = 0.85)+
-  #color_palette("jco")+
-  scale_color_manual(values = c(esc=qtl.colors[["esc_rna"]], npc = qtl.colors[["npc_rna"]] ) )+
-  ylab("Enrichment Score")+
-  ggtitle("Central nervous system development")+
-  xlab("")+
-  ylim(-1,1)+
-  theme(axis.text.x = element_text(size = 20),
-        axis.text.y = element_text(size = 16),
-        axis.title = element_text(size =16),
-        title = element_text(size =10)) -> plot_nerv
-
-gsva_rna_esc_npc_results %>%
-  filter( Category ==  "GO:0006094") %>%
-  left_join( select(goannot_wdef, Category = GOID, TERM)) %>% 
-  ggplot()+
-  aes( x = type,
-       y = Enrichment_Score,
-       col = type)+
-  geom_boxplot(width =0.2, size = 1.1)+
-  #geom_jitter()+
-  #geom_beeswarm(aes(col = sex))+
-  theme_pubclean(base_size = 16)+
-  stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0006094", term == "type"),
-                      label = "{p.adj.signif}",
-                      y.position = 0.85)+
-  # color_palette("jco")+
-  scale_color_manual(values = c(esc=qtl.colors[["esc_rna"]], npc = qtl.colors[["npc_rna"]] ) )+
-  ylab("Enrichment Score")+
-  ggtitle("Gluconeogenesis")+
-  xlab("")+
-  ylim(-1,1)+
-  theme(axis.text.x = element_text(size = 20),
-        axis.text.y = element_text(size = 16),
-        axis.title = element_text(size =16),
-        title = element_text(size =10)) -> plot_glucogenesis
-
-gsva_rna_esc_npc_results %>%
-  filter( Category ==  "GO:0006412") %>%
-  left_join( select(goannot_wdef, Category = GOID, TERM)) %>% 
-  ggplot()+
-  aes( x = type,
-       y = Enrichment_Score,
-       col = type)+
-  geom_boxplot(width =0.2, size = 1.1)+
-  #geom_jitter()+
-  #geom_beeswarm(aes(col = sex))+
-  theme_pubclean(base_size = 16)+
-  stat_pvalue_manual( filter(signif_results_tukey_rna_esc_npc,Category  == "GO:0006412", term == "type"),
-                      label = "{p.adj.signif}",
-                      y.position = 0.85)+
-  #color_palette("jco")+
-  scale_color_manual(values = c(esc=qtl.colors[["esc_rna"]], npc = qtl.colors[["npc_rna"]] ) )+
-  ylab("Enrichment Score")+
-  ggtitle("Translation")+
-  xlab("")+
-  ylim(-1,1)+
-  theme(axis.text.x = element_text(size = 20),
-        axis.text.y = element_text(size = 16),
-        axis.title = element_text(size =16),
-        title = element_text(size =10)) -> plot_translation
-
-ggarrange( plot_nerv, plot_translation, common.legend =  TRUE, legend = "none", nrow = 1)
-
-
-
-```
-
-```{r fig_2ab}
-#| warning: false
-#| message: false
-#| fig-width: 12
-#| fig-height: 4
-
-
-# sample_hist with the correlations
-
-# gsva examples
-gsva_plot <- ggarrange( plot_nerv, plot_translation, common.legend =  TRUE, legend = "none", nrow = 1)
-
-#figure2_ab <- ggarrange( sample_hist, gsva_plot, nrow = 1, widths = c(.5, 1))
-
-gsva_plot
-# ggsave(gsva_plot, filename = here("figures","gsva_plot.svg"), width = 6, height = 4, dpi = 300, units = "in")
-
-```
-
-### GSVA QTL table
-
-```{r gsva_qtl_scans_esc_npc}
-#| warning: false
-#| message: false
-#| cache: true
-
-# note that I am mapping with the NPC samples from the ESC+NPC combined GSVA results
-gsva_rna_esc_npc_results %>%
-  filter(type =="npc") |> 
-  select(Category, sampleid, Enrichment_Score) %>%
-  pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>%
-  column_to_rownames("sampleid") %>%
-  as.matrix() -> gsva_npc_results_mat
-
-# rankZ
-gsva_npc_results_mat_rankZ <- apply(gsva_npc_results_mat, 2,rankZ )
-
-shared.probs.npc_rna <- probs.npc_rna[ind=shared.samples]
-shared.kinship.npc_rna <- calc_kinship(shared.probs.npc_rna, type = "loco")
-#qtl mapping
-gsva_qtl_npc <- scan1( genoprobs = shared.probs.npc_rna,
-                   pheno = gsva_npc_results_mat_rankZ,
-                   kinship = shared.kinship.npc_rna,
-                   addcovar = covar.npc_rna[shared.samples,,drop=FALSE])
-
-
-gsva_qtl_npc_peaks <- find_peaks( gsva_qtl_npc, threshold = 7, gmap)
-# add interp_peak_bp, before, after
-gsva_qtl_npc_peaks <- gsva_qtl_npc_peaks %>% 
-  left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% 
-  mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>% 
-  mutate(phenotype=lodcolumn) %>%
-  mutate( peak_chr = chr,
-          peak_cM = pos) %>%
-  interp_bp(.) #add bp location for peaks
-
-```
-
-```{r gsva_qtl_scans_esc}
-#| warning: false
-#| message: false
-#| cache: true
-
-# note that I am mapping with the NPC samples from the ESC+NPC combined GSVA results
-gsva_rna_esc_npc_results %>%
-  filter(type =="esc") |> 
-  select(Category, sampleid, Enrichment_Score) %>%
-  pivot_wider( id_cols = sampleid , names_from = Category, values_from = Enrichment_Score) %>%
-  column_to_rownames("sampleid") %>%
-  as.matrix() -> gsva_esc_results_mat
-
-# rankZ
-gsva_esc_results_mat_rankZ <- apply(gsva_esc_results_mat, 2,rankZ )
-
-shared.probs.esc_rna <- probs.esc_rna[ind=shared.samples]
-shared.kinship.esc_rna <- calc_kinship(shared.probs.esc_rna, type = "loco")
-#qtl mapping
-gsva_qtl_esc <- scan1( genoprobs = shared.probs.esc_rna,
-                   pheno = gsva_esc_results_mat_rankZ,
-                   kinship = shared.kinship.esc_rna,
-                   addcovar = covar.esc_rna[shared.samples,,drop=FALSE])
-
-gsva_qtl_esc_peaks <- find_peaks( gsva_qtl_esc, threshold = 7, gmap)
-# add interp_peak_bp, before, after
-gsva_qtl_esc_peaks <- gsva_qtl_esc_peaks %>% 
-  left_join( ., goannot_wdef %>% select(lodcolumn=GOID,TERM) %>% distinct()) %>% 
-  mutate( TERM = ifelse( is.na(TERM), lodcolumn, TERM)) %>% 
-  mutate(phenotype=lodcolumn) %>%
-  mutate( peak_chr = chr,
-          peak_cM = pos) %>%
-  interp_bp(.) #add bp location for peaks
-
-```
-
-```{r}
-
-gsva_qtl_npc_peaks %>% 
-  mutate(type = "NPC") |> 
-  rbind(
-    gsva_qtl_esc_peaks |> 
-      mutate( type ="ESC") 
-  ) |> 
-  select( type, GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
-  # filter( GOID %in% (signif_results_tukey_rna %>% filter( term %in% c("sex","lifr_geno"),
-  #                                                          p.adj.signif != "ns" ))$Category ) %>%
-  filter(Lod > 7.5) %>% 
-  mutate_if(is.numeric, round, 2) %>% 
-  create_dt()
-
-```
-
-```{r closer_look_at_gsva_results_combined}
-#| warning: false
-#| message: false
-#| eval: false
-
-gsva_qtl_npc_peaks %>% 
-  mutate(type = "NPC") |> 
-  rbind(
-    gsva_qtl_esc_peaks |> 
-      mutate( type ="ESC") 
-  ) |> 
-  select( type, GOID = lodcolumn, TERM, peak_chr = chr, Lod = lod, peak_cM, peak_bp = interp_bp_peak) %>% 
-  filter(
-    (peak_chr == 1 & between(peak_bp, 104e06, 113e06)) |
-    (peak_chr == 10 & between(peak_bp, 33e06, 40e06) ) |
-    (peak_chr == 11 & between(peak_bp, 107e06, 111e06) )
-  ) %>% 
-  filter(Lod > 7) |> 
-  create_dt()
 
 ```
 
@@ -3185,125 +2401,3 @@ ggraph(g)+
 ```
 :::
 
-# Integrating DO mESC and NPC transcript abundance
-
-I am using MOFA to integrate the gene expression across the two cell states.
-
-```{r mofa_setup_and_run}
-#| eval: false
-
-# esc_rna_long_df <- log1p(expr.esc_rna) |>
-#   t() |>
-#   as_tibble( rownames="feature") |>
-#   pivot_longer(cols = 2:(1+nrow(expr.esc_rna)) , names_to = "sample",values_to = "value")
-# 
-# npc_rna_long_df <- log1p(expr.npc_rna) |>
-#   t() |>
-#   as_tibble( rownames="feature") |>
-#   pivot_longer(cols = 2:(1+nrow(expr.npc_rna)) , names_to = "sample",values_to = "value")
-# 
-# mofa_data_tb <- esc_rna_long_df |>
-#   mutate( view = "ESC") |>
-#   rbind(
-#     npc_rna_long_df |>
-#       mutate(view = "NPC")
-#          ) |> 
-#   filter(sample %in% shared.samples)
-# 
-# # saveRDS(mofa_data_tb, file = here("_data","do_npc_esc_data_for_mofa.RData"))
-# 
-# # Let's get the most variable genes instead of all of them to run in MOFA
-# high.var.genes <- var.npc_rna %>% 
-#   filter( cv.npc_rna >= quantile(cv.npc_rna, 0.75)) # 3541 genes with 2205 overlap in ESCs
-# # nrow(high.var.genes)
-# # length(intersect(high.var.genes$ensembl_gene_id,esc.genes$ensembl_gene_id))
-# mofa_data_tb_most_var <- mofa_data_tb |> 
-#   filter( feature %in% high.var.genes$ensembl_gene_id)
-
-# saveRDS(mofa_data_tb_most_var, file = here("_data","do_npc_esc_data_for_mofa_var_filtered.RData"))
-
-# running on the interactive cluster with: singularity exec docker://gtca/mofa2:latest R
-# It runs really fast!
-# Using:
-# - shared samples
-# - all genes
-# - 15 factors
-
-library(MOFA2)
-mofa_tb <- readRDS("/projects/munger-lab/projects/DO_mNPC/ESC_NPC_eQTL_comparison/_data/do_npc_esc_data_for_mofa.RData")
-
-# mofa_tb <- readRDS("/projects/munger-lab/projects/DO_mNPC/ESC_NPC_eQTL_comparison/_data/do_npc_esc_data_for_mofa_var_filtered.RData")
-
-mofa_obj <- create_mofa(mofa_tb)
-print(mofa_obj)  
-
-data_opts <- get_default_data_options(mofa_obj)
-head(data_opts)
-
-model_opts <- get_default_model_options(mofa_obj)
-model_opts$num_factors <- 15
-head(model_opts)
-
-train_opts <- get_default_training_options(mofa_obj)
-train_opts$maxiter <- 10000
-train_opts$convergence_mode <- "slow"
-train_opts$seed <- 42
-train_opts$freqELBO <- 1
-
-head(train_opts)
-
-MOFAobject <- prepare_mofa(
-  object = mofa_obj,
-  data_options = data_opts,
-  model_options = model_opts,
-  training_options = train_opts
-)
-
-outfile = ("/projects/munger-lab/projects/DO_mNPC/ESC_NPC_eQTL_comparison/_data/do_npc_esc_shared_samples_all_genes_model.hdf5")
-MOFAobject.trained <- run_mofa(MOFAobject, outfile, use_basilisk=TRUE)
-
-```
-
-```{r mofa_model}
-#| eval: true
-
-library(MOFA2)
-model <- load_model(here("_data","do_npc_esc_shared_samples_all_genes_model.hdf5"))
-
-plot_data_overview(model)
-
-sample_metadata <- covarTidy.npc_rna |> 
-  select( sample = sampleid, 
-          sex, 
-          lifr_geno) |> 
-  filter(
-    sample %in% shared.samples
-  )
-
-samples_metadata(model) <- sample_metadata
-
-plot_variance_explained(model, x="view", y="factor", plot_total = T)
-
-plot_factor(model, 
-  factor = 1:10,
-  color_by = "sex"
-)
-
-
-plot_factors(model, 
-  factor = 1:10,
-  color_by = "sex"
-)
-
-plot_factor_cor(model)
-
-correlate_factors_with_covariates(model, 
-  covariates = c("sex","lifr_geno"), 
-  plot="log_pval"
-)
-
-factors <- get_factors(model, factors = "all", as.data.frame = T)
-weights <- get_weights(model, views = "all", factors = "all", as.data.frame = T)
-
-
-```
