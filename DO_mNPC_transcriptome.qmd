@@ -53,8 +53,8 @@ library(Hmisc) # rcorr
 library(gprofiler2)
 # set gprofiler version
 # set_base_url("https://biit.cs.ut.ee/gprofiler")
-set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e107_eg54_p17/")
-# set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e108_eg55_p17/")
+# set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15/")
+
 # library(clusterProfiler)
 library(simplifyEnrichment)
 library(fgsea)
@@ -62,8 +62,8 @@ library(msigdbr)
 
 library(sva)
 # library(WebGestaltR)
-library(WGCNA)
-library(GSVA)
+#library(WGCNA)
+#library(GSVA)
 library(GO.db)
 library(rstatix)
 
@@ -274,17 +274,39 @@ sac_genes <- read_tsv(here("_data","mitotic_sac_genes.tsv"), col_names = c("mgi_
 #| label: vst
 
 # doing vst on both data sets to remove the dependency of mean on variance
+# I need to start with raw expression, normalize with vst then batch correct using combat.
+expr.esc_rna_vst <- DESeq2::vst(object = round(raw.expr.esc_rna) )
+expr.npc_rna_vst <- DESeq2::vst(object = round(raw.expr.npc_rna) )
 
-expr.esc_rna_vst <- DESeq2::vst(object = t(round(expr.esc_rna)))
-expr.npc_rna_vst <- DESeq2::vst(object = t(round(expr.npc_rna)))
+dat.esc_rna <- log1p(expr.esc_rna_vst)
+mod.esc_rna <- model.matrix(~ sex, data=covarTidy.esc_rna)
+exprComBat.esc_rna <- ComBat(dat=dat.esc_rna, 
+                             batch=covarTidy.esc_rna$libraryprep, 
+                             mod=mod.esc_rna, 
+                             par.prior=TRUE, 
+                             prior.plots=FALSE)
+expr.esc_rna_prep <- expm1(exprComBat.esc_rna)
+expr.esc_rna_prep[expr.esc_rna_prep < 0] <- 0
 
-expr.esc_rna <- t(expr.esc_rna_vst)
-expr.npc_rna <- t(expr.npc_rna_vst)
+dat.npc_rna <- log1p(expr.npc_rna_vst)
+mod.npc_rna <- model.matrix(~ sex, data=covarTidy.npc_rna)
+exprComBat.npc_rna <- ComBat(dat=dat.npc_rna, 
+                             batch=covarTidy.npc_rna$libraryprep, 
+                             mod=mod.npc_rna, 
+                             par.prior=TRUE, 
+                             prior.plots=FALSE)
+
+expr.npc_rna_prep <- expm1(exprComBat.npc_rna)
+expr.npc_rna_prep[expr.npc_rna_prep < 0] <- 0
+
+
+expr.esc_rna <- t(expr.esc_rna_prep)
+expr.npc_rna <- t(expr.npc_rna_prep)
 ```
 
 Here, I am contrasting global gene expression between embryonic stem cells (ESCs) and neural progenitor cells (NPCs) derived from Diversity Outbred (DO) mice.
 We analyzed RNA-seq data from a total of `r nrow(expr.esc_rna)` ESC and `r nrow(expr.npc_rna)` NPC lines; 127 lines had RNA-seq data for both ESCs and NPCs.
-After filtering out genes with low expression and genes not expressed in at least half of the samples, we detect `r formatC(ncol(expr.esc_rna),big.mark = ",")` in ESCs and `r formatC(ncol(expr.npc_rna),big.mark = ",")` in NPCs, with `r formatC(length(shared.genes),big.mark = ",")` genes detected in both cell types.
+After filtering out genes with low expression (median(tpm) < 0.5) and genes not expressed in at least half of the samples, we detect `r formatC(ncol(expr.esc_rna),big.mark = ",")` in ESCs and `r formatC(ncol(expr.npc_rna),big.mark = ",")` in NPCs, with `r formatC(length(shared.genes),big.mark = ",")` genes detected in both cell types.
 The filtered data was then normalized to the upper quartile value (each read count is divided by the 75th percentile of the read counts across samples) to allow for comparison of expression measures within and across cell-types.
 Both data-sets were generated in batches, and we used ComBat as implemented in the R package sva to correct for batch effects while controlling for the sexes of lines in each batch.
 Both ESC and NPC expression values were transformed to rank normal scores prior to eQTL mapping.
@@ -399,7 +421,7 @@ ggscatter(var.npc_rna,
   add.params = list(color = "blue", fill = "lightgray"), show.legend.text = FALSE,
   yscale = "log10", xscale = "log10"
 ) +
-  stat_cor(method = "pearson", label.x = .6, label.y = 1.1) + # Add correlation coefficient
+  stat_cor(method = "pearson", label.x = .9, label.y = 1.1) + # Add correlation coefficient
   xlab("Mean") +
   ylab("Variance") +
   theme_pubclean(base_size = 14) +
@@ -1674,7 +1696,7 @@ for( i in 1:1000){
 
 }
 
-save(sample_cor, file = here("_data","npc_esc_rna_sample_cor_perm_pearson.RData"))
+save(sample_cor, file = here("_data","npc_esc_rna_sample_cor_perm_pearson_vst.RData"))
 ```
 
 ```{r plot_null_dist}
@@ -1683,7 +1705,7 @@ save(sample_cor, file = here("_data","npc_esc_rna_sample_cor_perm_pearson.RData"
 #| fig-width: 5
 #| fig-height: 6
 
-load(here("_data","npc_esc_rna_sample_cor_perm_pearson.RData"))
+load(here("_data","npc_esc_rna_sample_cor_perm_pearson_vst.RData"))
 
 sample_cor %>% 
   enframe() %>% 
@@ -1807,7 +1829,7 @@ gene_cor_df <- tibble( cor =diag(gene.cor$r[colnames(shared.expr.npc_rna3), coln
   left_join(., all.genes) %>%
   mutate(p_adj = p.adjust(p_val, method = "BH"))
 
-save(gene_cor_df, file = here("_data","gene_cor_df.RData"))
+save(gene_cor_df, file = here("_data","gene_cor_df_vst.RData"))
 
 ```
 
@@ -1820,7 +1842,7 @@ Histogram of correlations for all genes between ESC and NPC lines.
 #| fig-height: 4
 
 
-load(here("_data","gene_cor_df.RData"))
+load(here("_data","gene_cor_df_vst.RData"))
 
 gene_cor_df %>% 
   mutate(p_val_rank = ifelse(p_adj < 0.05, "p < 0.05", "ns") ) %>%
@@ -2034,7 +2056,7 @@ simplifyGOFromMultipleLists( lt = esc_npc_uniq_go_bp,
 # Differential expression analysis
 
 I am using Wilcoxon rank sum test as an alternative to DESEQ2.
-I am using upper quantile normalized, batch corrected (using comBAT) gene expression counts for testing.
+I am using batch corrected (using comBAT) gene expression counts for testing.
 
 Q: Do I need to correct for sex since it is a dominant effect in ESCs or is it okay to leave that in?
 
