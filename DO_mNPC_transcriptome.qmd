@@ -272,6 +272,7 @@ sac_genes <- read_tsv(here("_data","mitotic_sac_genes.tsv"), col_names = c("mgi_
 
 ```{r}
 #| label: vst
+#| eval: false
 
 # doing vst on both data sets to remove the dependency of mean on variance
 # I need to start with raw expression, normalize with vst then batch correct using combat.
@@ -2177,13 +2178,13 @@ simplifyGOFromMultipleLists( lt = esc_npc_uniq_go_bp,
 
 # Differential expression analysis
 
-I am starting with raw data, normalize using vst then removing both batch and sex effects. Then I use wilcoxon rank test to compare the two different cell states.
+I am starting with raw data, normalize using vst/UQ then removing both batch and sex effects. Then I use wilcoxon rank test to compare the two different cell states.
 
 
-```{r wilcoxon_rank_test}
+```{r wilcoxon_rank_test_prep_w_vst}
 #| warning: false
 #| message: false
-#| eval: true
+#| eval: false
 
 expr.esc_rna_vst <- DESeq2::vst(object = round(raw.expr.esc_rna) )
 expr.npc_rna_vst <- DESeq2::vst(object = round(raw.expr.npc_rna) )
@@ -2254,10 +2255,88 @@ npc_esc_log2fold %>%
 
 ```
 
+```{r wilcoxon_rank_test_prep_w_uq}
+#| warning: false
+#| message: false
+#| eval: false
+
+esc_rna_q75 <- apply(raw.expr.esc_rna, 2, quantile, 0.75)
+esc_rna_ratio <- mean(esc_rna_q75)/esc_rna_q75
+expr.esc_rna_uq <- sweep(raw.expr.esc_rna, 2, esc_rna_ratio, FUN="*")
+
+npc_rna_q75 <- apply(raw.expr.npc_rna, 2, quantile, 0.75)
+npc_rna_ratio <- mean(npc_rna_q75)/npc_rna_q75
+expr.npc_rna_uq <- sweep(raw.expr.npc_rna, 2, npc_rna_ratio, FUN="*")
+
+dat.esc_rna <- log1p(expr.esc_rna_uq)
+mod.esc_rna <- model.matrix(~ sex, data=covarTidy.esc_rna)
+exprComBat.esc_rna_batch <- ComBat(dat=dat.esc_rna, 
+                             batch=covarTidy.esc_rna$libraryprep, 
+                             mod=mod.esc_rna, 
+                             par.prior=TRUE, 
+                             prior.plots=FALSE)
+exprComBat.esc_rna_sex <- ComBat( dat=exprComBat.esc_rna_batch, 
+                             batch=covarTidy.esc_rna$sex, 
+                             par.prior=TRUE, 
+                             prior.plots=FALSE)
+
+expr.esc_rna_prep <- expm1(exprComBat.esc_rna_sex)
+expr.esc_rna_prep[expr.esc_rna_prep < 0] <- 0
+
+dat.npc_rna <- log1p(expr.npc_rna_uq)
+mod.npc_rna <- model.matrix(~ sex, data=covarTidy.npc_rna)
+exprComBat.npc_rna_batch <- ComBat(dat=dat.npc_rna, 
+                             batch=covarTidy.npc_rna$libraryprep, 
+                             mod=mod.npc_rna, 
+                             par.prior=TRUE, 
+                             prior.plots=FALSE)
+exprComBat.npc_rna_sex <- ComBat(dat=exprComBat.npc_rna_batch, 
+                             batch=covarTidy.npc_rna$sex,
+                             par.prior=TRUE, 
+                             prior.plots=FALSE)
+
+
+expr.npc_rna_prep <- expm1(exprComBat.npc_rna_sex)
+expr.npc_rna_prep[expr.npc_rna_prep < 0] <- 0
+
+
+expr.esc_rna_state_only <- t(expr.esc_rna_prep)
+expr.npc_rna_state_only <- t(expr.npc_rna_prep)
+
+expr.npc_rna_state_only %>%
+  as_tibble( rownames = "sampleid") %>%
+  pivot_longer( colnames(expr.npc_rna_state_only), names_to = "ensembl_gene_id", values_to = "npc") %>%
+  full_join(
+    expr.esc_rna_state_only %>%
+      as_tibble( rownames = "sampleid") %>%
+      pivot_longer( colnames(expr.esc_rna_state_only), names_to = "ensembl_gene_id", values_to = "esc")
+  ) %>%
+  filter(sampleid %in% shared.samples, ensembl_gene_id %in% shared.genes) %>%
+  pivot_longer( cols = c("esc","npc"), names_to = "cell_type", values_to ="expr") -> npc_esc_expr_df
+
+# get adjusted p values
+npc_esc_expr_df %>%
+  #filter( ensembl_gene_id %in% shared.genes[1:10]) %>%
+  group_by(ensembl_gene_id) %>%
+  rstatix::wilcox_test(., expr~cell_type, paired = TRUE, p.adjust.method = "BH") -> npc_esc_wilcox_p
+
+# get log2fold changes
+npc_esc_expr_df %>%
+  #filter( ensembl_gene_id %in% shared.genes[1:10]) %>%
+  group_by(ensembl_gene_id, cell_type) %>%
+  summarize( expr = mean(expr, na.rm = T)) %>%
+  ungroup() %>%
+  pivot_wider( id_cols = "ensembl_gene_id", names_from = "cell_type", values_from ="expr" ) %>%
+  mutate( log2foldchange = log2(npc/esc)) -> npc_esc_log2fold
+
+npc_esc_log2fold %>%
+  left_join( npc_esc_wilcox_p ) -> npc_esc_wilcox_df
+
+```
 ::: {#NPC_deseq .panel-tabset .nav-pills}
 ## Table of differentially expressed genes
 
-Here is the table of differentially expressed genes (FDR \<0.05, abs(log2foldchange) \> 0).
+Here is the table of differentially expressed genes (FDR \<0.05, abs(log2foldchange) \> 2).
 
 ```{r wilcox_table}
 #| warning: false
@@ -2265,7 +2344,7 @@ Here is the table of differentially expressed genes (FDR \<0.05, abs(log2foldcha
 
 
 npc_esc_wilcox_df %>%
-  filter( p <0.05, abs(log2foldchange) > 0.5) %>%
+  filter( p <0.05, abs(log2foldchange) > 2) %>%
   left_join(all.genes) %>%
   select(ensembl_gene_id,
          mgi_symbol,
